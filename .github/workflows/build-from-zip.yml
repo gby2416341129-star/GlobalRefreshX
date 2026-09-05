@@ -18,34 +18,27 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check ZIP exists
+      - name: Check Alpha 45 ZIP
         shell: bash
         run: |
           set -euo pipefail
 
-          ZIP="GlobalRefreshX-working-alpha44.zip"
+          ZIP="GlobalRefreshX-working-alpha45.zip"
 
           if [[ ! -f "$ZIP" ]]; then
-            echo ""
-            echo "======================================================"
-            echo "GlobalRefresh X source ZIP was not found."
-            echo "Expected file:"
+            echo "ERROR: Alpha 45 ZIP was not found."
+            echo "Expected:"
             echo "  $ZIP"
             echo ""
-            echo "Upload that ZIP to the repository root, then run again."
-            echo "======================================================"
-            echo ""
-
-            echo "Current repository files:"
-            find . -maxdepth 2 -type f | sort
-
+            echo "Repository root contains:"
+            ls -lah
             exit 1
           fi
 
-          echo "Found source ZIP:"
+          echo "Found Alpha 45:"
           ls -lh "$ZIP"
 
-      - name: Extract GlobalRefresh X
+      - name: Extract Alpha 45
         shell: bash
         run: |
           set -euo pipefail
@@ -54,34 +47,42 @@ jobs:
           mkdir -p source
 
           ditto -x -k \
-            GlobalRefreshX-working-alpha44.zip \
+            GlobalRefreshX-working-alpha45.zip \
             source
 
-          echo "Extracted top-level files:"
-          ls -la source
+          echo "Extraction completed."
+          echo ""
+          echo "Top-level extracted contents:"
+          ls -lah source
 
-      - name: Locate project root
+      - name: Locate GlobalRefresh X project
         id: locate
         shell: bash
         run: |
           set -euo pipefail
 
-          ROOT="$(find source \
-            -maxdepth 3 \
+          BUILD_SCRIPT="$(find source \
+            -maxdepth 4 \
             -type f \
             -path '*/scripts/build_unsigned_ipa.sh' \
             -print \
-            -quit \
-            | sed 's#/scripts/build_unsigned_ipa.sh$##')"
+            -quit)"
 
-          if [[ -z "$ROOT" ]]; then
-            echo "Could not locate GlobalRefresh X project root."
-            echo "Extracted tree:"
-            find source -maxdepth 3 -print | sort
+          if [[ -z "$BUILD_SCRIPT" ]]; then
+            echo "ERROR: Could not locate build_unsigned_ipa.sh"
+            echo ""
+            find source -maxdepth 4 -print | sort
             exit 1
           fi
 
-          echo "Project root: $ROOT"
+          ROOT="${BUILD_SCRIPT%/scripts/build_unsigned_ipa.sh}"
+
+          echo "GlobalRefresh X project root:"
+          echo "$ROOT"
+
+          test -d "$ROOT/pip_swift"
+          test -d "$ROOT/scripts"
+
           echo "root=$ROOT" >> "$GITHUB_OUTPUT"
 
       - name: Show Xcode environment
@@ -93,11 +94,11 @@ jobs:
           sw_vers
 
           echo ""
-          echo "Default Xcode:"
+          echo "Current Xcode:"
           xcodebuild -version
 
           echo ""
-          echo "iPhoneOS SDK:"
+          echo "Current iPhoneOS SDK:"
           xcrun --sdk iphoneos --show-sdk-version
 
           echo ""
@@ -122,28 +123,33 @@ jobs:
           chmod +x scripts/verify_project.sh
           ./scripts/verify_project.sh
 
-      - name: Prepare CocoaPods
-        working-directory: ${{ steps.locate.outputs.root }}
+      - name: Verify bundled CocoaPods
+        working-directory: ${{ steps.locate.outputs.root }}/pip_swift
         shell: bash
         run: |
           set -euo pipefail
 
-          if [[ -f "Pods/Manifest.lock" ]] && \
-             [[ -f "Podfile.lock" ]] && \
-             cmp -s "Pods/Manifest.lock" "Podfile.lock"; then
+          echo "Checking bundled CocoaPods files..."
 
-            echo "Bundled Pods match Podfile.lock."
-            echo "Skipping pod install."
-          else
-            echo "Pods are missing or do not match Podfile.lock."
-            echo "Installing CocoaPods dependencies..."
-
-            if ! command -v pod >/dev/null 2>&1; then
-              sudo gem install cocoapods
-            fi
-
-            pod install --deployment
+          if [[ ! -f "Podfile.lock" ]]; then
+            echo "ERROR: pip_swift/Podfile.lock is missing."
+            exit 1
           fi
+
+          if [[ ! -f "Pods/Manifest.lock" ]]; then
+            echo "ERROR: pip_swift/Pods/Manifest.lock is missing."
+            exit 1
+          fi
+
+          if ! cmp -s "Podfile.lock" "Pods/Manifest.lock"; then
+            echo "ERROR: Podfile.lock and Pods/Manifest.lock do not match."
+            echo ""
+            diff -u "Podfile.lock" "Pods/Manifest.lock" || true
+            exit 1
+          fi
+
+          echo "Bundled Pods match Podfile.lock."
+          echo "No pod install is required."
 
       - name: Xcode workspace preflight
         working-directory: ${{ steps.locate.outputs.root }}
@@ -153,6 +159,8 @@ jobs:
 
           mkdir -p build/diagnostics
 
+          echo "Checking workspace and scheme..."
+
           xcodebuild \
             -workspace pip_swift/pip_swift.xcworkspace \
             -scheme pip_swift \
@@ -160,6 +168,9 @@ jobs:
             -sdk iphoneos \
             -list \
             | tee build/diagnostics/xcodebuild-list.log
+
+          echo ""
+          echo "Resolving final Xcode build settings..."
 
           xcodebuild \
             -workspace pip_swift/pip_swift.xcworkspace \
@@ -179,9 +190,11 @@ jobs:
           set -euo pipefail
 
           chmod +x scripts/build_unsigned_ipa.sh
+
+          echo "Starting real Xcode iPhoneOS Release build..."
           ./scripts/build_unsigned_ipa.sh
 
-      - name: Generate SHA256
+      - name: Verify generated IPA
         working-directory: ${{ steps.locate.outputs.root }}
         shell: bash
         run: |
@@ -189,18 +202,35 @@ jobs:
 
           IPA="dist/GlobalRefreshX-unsigned.ipa"
 
-          test -f "$IPA"
+          if [[ ! -f "$IPA" ]]; then
+            echo "ERROR: unsigned IPA was not generated."
+            exit 1
+          fi
 
-          shasum -a 256 "$IPA" \
-            | tee dist/GlobalRefreshX-unsigned.ipa.sha256
+          echo "IPA generated successfully:"
+          ls -lh "$IPA"
 
-          ls -lh dist/
+          echo ""
+          echo "IPA contents:"
+          unzip -l "$IPA" | head -80
+
+      - name: Generate SHA256
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd dist
+
+          shasum -a 256 \
+            GlobalRefreshX-unsigned.ipa \
+            | tee GlobalRefreshX-unsigned.ipa.sha256
 
       - name: Upload unsigned IPA
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: GlobalRefreshX-unsigned-IPA
+          name: GlobalRefreshX-Alpha45-unsigned-IPA
           path: |
             ${{ steps.locate.outputs.root }}/dist/GlobalRefreshX-unsigned.ipa
             ${{ steps.locate.outputs.root }}/dist/GlobalRefreshX-unsigned.ipa.sha256
@@ -211,7 +241,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: GlobalRefreshX-build-diagnostics
+          name: GlobalRefreshX-Alpha45-build-diagnostics
           path: |
             ${{ steps.locate.outputs.root }}/build/diagnostics
             ${{ steps.locate.outputs.root }}/build/**/*.log
