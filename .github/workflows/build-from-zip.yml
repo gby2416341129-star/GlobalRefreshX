@@ -1,0 +1,220 @@
+name: Build GlobalRefresh X from ZIP
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check ZIP exists
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP="GlobalRefreshX-working-alpha44.zip"
+
+          if [[ ! -f "$ZIP" ]]; then
+            echo ""
+            echo "======================================================"
+            echo "GlobalRefresh X source ZIP was not found."
+            echo "Expected file:"
+            echo "  $ZIP"
+            echo ""
+            echo "Upload that ZIP to the repository root, then run again."
+            echo "======================================================"
+            echo ""
+
+            echo "Current repository files:"
+            find . -maxdepth 2 -type f | sort
+
+            exit 1
+          fi
+
+          echo "Found source ZIP:"
+          ls -lh "$ZIP"
+
+      - name: Extract GlobalRefresh X
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf source
+          mkdir -p source
+
+          ditto -x -k \
+            GlobalRefreshX-working-alpha44.zip \
+            source
+
+          echo "Extracted top-level files:"
+          ls -la source
+
+      - name: Locate project root
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ROOT="$(find source \
+            -maxdepth 3 \
+            -type f \
+            -path '*/scripts/build_unsigned_ipa.sh' \
+            -print \
+            -quit \
+            | sed 's#/scripts/build_unsigned_ipa.sh$##')"
+
+          if [[ -z "$ROOT" ]]; then
+            echo "Could not locate GlobalRefresh X project root."
+            echo "Extracted tree:"
+            find source -maxdepth 3 -print | sort
+            exit 1
+          fi
+
+          echo "Project root: $ROOT"
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+
+      - name: Show Xcode environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "macOS:"
+          sw_vers
+
+          echo ""
+          echo "Default Xcode:"
+          xcodebuild -version
+
+          echo ""
+          echo "iPhoneOS SDK:"
+          xcrun --sdk iphoneos --show-sdk-version
+
+          echo ""
+          echo "Developer directory:"
+          xcode-select -p
+
+      - name: Select Xcode 26+
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          chmod +x scripts/select_xcode_26.sh
+          ./scripts/select_xcode_26.sh
+
+      - name: Verify project
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          chmod +x scripts/verify_project.sh
+          ./scripts/verify_project.sh
+
+      - name: Prepare CocoaPods
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -f "Pods/Manifest.lock" ]] && \
+             [[ -f "Podfile.lock" ]] && \
+             cmp -s "Pods/Manifest.lock" "Podfile.lock"; then
+
+            echo "Bundled Pods match Podfile.lock."
+            echo "Skipping pod install."
+          else
+            echo "Pods are missing or do not match Podfile.lock."
+            echo "Installing CocoaPods dependencies..."
+
+            if ! command -v pod >/dev/null 2>&1; then
+              sudo gem install cocoapods
+            fi
+
+            pod install --deployment
+          fi
+
+      - name: Xcode workspace preflight
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p build/diagnostics
+
+          xcodebuild \
+            -workspace pip_swift/pip_swift.xcworkspace \
+            -scheme pip_swift \
+            -configuration Release \
+            -sdk iphoneos \
+            -list \
+            | tee build/diagnostics/xcodebuild-list.log
+
+          xcodebuild \
+            -workspace pip_swift/pip_swift.xcworkspace \
+            -scheme pip_swift \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -showBuildSettings \
+            | tee build/diagnostics/xcodebuild-settings.log
+
+      - name: Build unsigned IPA
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          chmod +x scripts/build_unsigned_ipa.sh
+          ./scripts/build_unsigned_ipa.sh
+
+      - name: Generate SHA256
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IPA="dist/GlobalRefreshX-unsigned.ipa"
+
+          test -f "$IPA"
+
+          shasum -a 256 "$IPA" \
+            | tee dist/GlobalRefreshX-unsigned.ipa.sha256
+
+          ls -lh dist/
+
+      - name: Upload unsigned IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GlobalRefreshX-unsigned-IPA
+          path: |
+            ${{ steps.locate.outputs.root }}/dist/GlobalRefreshX-unsigned.ipa
+            ${{ steps.locate.outputs.root }}/dist/GlobalRefreshX-unsigned.ipa.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GlobalRefreshX-build-diagnostics
+          path: |
+            ${{ steps.locate.outputs.root }}/build/diagnostics
+            ${{ steps.locate.outputs.root }}/build/**/*.log
+            ${{ steps.locate.outputs.root }}/build/**/*.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
