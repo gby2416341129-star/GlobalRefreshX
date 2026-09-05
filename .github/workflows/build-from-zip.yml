@@ -18,15 +18,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check Alpha 45 ZIP
+      - name: Check Alpha 46 Clean ZIP
         shell: bash
         run: |
           set -euo pipefail
 
-          ZIP="GlobalRefreshX-working-alpha45.zip"
+          ZIP="GlobalRefreshX-working-alpha46-clean.zip"
 
           if [[ ! -f "$ZIP" ]]; then
-            echo "ERROR: Alpha 45 ZIP was not found."
+            echo "ERROR: Alpha 46 Clean ZIP was not found."
             echo "Expected:"
             echo "  $ZIP"
             echo ""
@@ -35,10 +35,10 @@ jobs:
             exit 1
           fi
 
-          echo "Found Alpha 45:"
+          echo "Found Alpha 46 Clean:"
           ls -lh "$ZIP"
 
-      - name: Extract Alpha 45
+      - name: Extract Alpha 46 Clean
         shell: bash
         run: |
           set -euo pipefail
@@ -47,7 +47,7 @@ jobs:
           mkdir -p source
 
           ditto -x -k \
-            GlobalRefreshX-working-alpha45.zip \
+            GlobalRefreshX-working-alpha46-clean.zip \
             source
 
           echo "Extraction completed."
@@ -230,7 +230,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: GlobalRefreshX-Alpha45-unsigned-IPA
+          name: GlobalRefreshX-Alpha46-Clean-unsigned-IPA
           path: |
             ${{ steps.locate.outputs.root }}/dist/GlobalRefreshX-unsigned.ipa
             ${{ steps.locate.outputs.root }}/dist/GlobalRefreshX-unsigned.ipa.sha256
@@ -241,7 +241,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: GlobalRefreshX-Alpha45-build-diagnostics
+          name: GlobalRefreshX-Alpha46-Clean-build-diagnostics
           path: |
             ${{ steps.locate.outputs.root }}/build/diagnostics
             ${{ steps.locate.outputs.root }}/build/**/*.log
