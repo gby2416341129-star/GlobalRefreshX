@@ -1,4 +1,4 @@
-name: Build GlobalRefresh X from ZIP
+name: Build GlobalRefresh X Alpha47 R1 Adaptive
 
 on:
   workflow_dispatch:
@@ -18,15 +18,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check Alpha 46 Clean ZIP
+      - name: Check Alpha 47 R1 Adaptive ZIP
         shell: bash
         run: |
           set -euo pipefail
-
-          ZIP="GlobalRefreshX-working-alpha46-clean.zip"
-
+          ZIP="GlobalRefreshX-working-alpha47-r1-adaptive-clean.zip"
           if [[ ! -f "$ZIP" ]]; then
-            echo "ERROR: Alpha 46 Clean ZIP was not found."
+            echo "ERROR: Alpha 47 R1 Adaptive ZIP was not found."
             echo "Expected:"
             echo "  $ZIP"
             echo ""
@@ -34,22 +32,18 @@ jobs:
             ls -lah
             exit 1
           fi
-
-          echo "Found Alpha 46 Clean:"
+          echo "Found Alpha 47 R1 Adaptive source:"
           ls -lh "$ZIP"
 
-      - name: Extract Alpha 46 Clean
+      - name: Extract Alpha 47 R1 Adaptive
         shell: bash
         run: |
           set -euo pipefail
-
           rm -rf source
           mkdir -p source
-
           ditto -x -k \
-            GlobalRefreshX-working-alpha46-clean.zip \
+            GlobalRefreshX-working-alpha47-r1-adaptive-clean.zip \
             source
-
           echo "Extraction completed."
           echo ""
           echo "Top-level extracted contents:"
@@ -60,28 +54,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           BUILD_SCRIPT="$(find source \
-            -maxdepth 4 \
+            -maxdepth 5 \
             -type f \
             -path '*/scripts/build_unsigned_ipa.sh' \
             -print \
             -quit)"
 
           if [[ -z "$BUILD_SCRIPT" ]]; then
-            echo "ERROR: Could not locate build_unsigned_ipa.sh"
+            echo "ERROR: Could not locate scripts/build_unsigned_ipa.sh"
             echo ""
-            find source -maxdepth 4 -print | sort
+            find source -maxdepth 5 -print | sort
             exit 1
           fi
 
           ROOT="${BUILD_SCRIPT%/scripts/build_unsigned_ipa.sh}"
-
           echo "GlobalRefresh X project root:"
           echo "$ROOT"
 
           test -d "$ROOT/pip_swift"
           test -d "$ROOT/scripts"
+          test -f "$ROOT/scripts/verify_project.sh"
+          test -f "$ROOT/scripts/select_xcode_26.sh"
+          test -f "$ROOT/scripts/build_unsigned_ipa.sh"
 
           echo "root=$ROOT" >> "$GITHUB_OUTPUT"
 
@@ -89,18 +84,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           echo "macOS:"
           sw_vers
-
           echo ""
           echo "Current Xcode:"
           xcodebuild -version
-
           echo ""
           echo "Current iPhoneOS SDK:"
           xcrun --sdk iphoneos --show-sdk-version
-
           echo ""
           echo "Developer directory:"
           xcode-select -p
@@ -110,16 +101,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           chmod +x scripts/select_xcode_26.sh
           ./scripts/select_xcode_26.sh
+          echo ""
+          echo "Selected Xcode:"
+          xcodebuild -version
+          echo ""
+          echo "Selected iPhoneOS SDK:"
+          xcrun --sdk iphoneos --show-sdk-version
 
-      - name: Verify project
+      - name: Verify Alpha 47 R1 project
         working-directory: ${{ steps.locate.outputs.root }}
         shell: bash
         run: |
           set -euo pipefail
-
           chmod +x scripts/verify_project.sh
           ./scripts/verify_project.sh
 
@@ -128,7 +123,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           echo "Checking bundled CocoaPods files..."
 
           if [[ ! -f "Podfile.lock" ]]; then
@@ -156,11 +150,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           mkdir -p build/diagnostics
 
           echo "Checking workspace and scheme..."
-
           xcodebuild \
             -workspace pip_swift/pip_swift.xcworkspace \
             -scheme pip_swift \
@@ -171,7 +163,6 @@ jobs:
 
           echo ""
           echo "Resolving final Xcode build settings..."
-
           xcodebuild \
             -workspace pip_swift/pip_swift.xcworkspace \
             -scheme pip_swift \
@@ -188,10 +179,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           chmod +x scripts/build_unsigned_ipa.sh
-
-          echo "Starting real Xcode iPhoneOS Release build..."
+          echo "Starting real Xcode iPhoneOS Release build for Alpha47-r1 Adaptive..."
           ./scripts/build_unsigned_ipa.sh
 
       - name: Verify generated IPA
@@ -199,7 +188,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           IPA="dist/GlobalRefreshX-unsigned.ipa"
 
           if [[ ! -f "$IPA" ]]; then
@@ -209,39 +197,44 @@ jobs:
 
           echo "IPA generated successfully:"
           ls -lh "$IPA"
-
           echo ""
           echo "IPA contents:"
-          unzip -l "$IPA" | head -80
+          unzip -l "$IPA" | head -100
+          echo ""
+
+          if ! unzip -l "$IPA" | grep -q 'Payload/.*\.app/'; then
+            echo "ERROR: IPA does not contain Payload/*.app/"
+            exit 1
+          fi
+
+          echo "IPA structure check passed."
 
       - name: Generate SHA256
         working-directory: ${{ steps.locate.outputs.root }}
         shell: bash
         run: |
           set -euo pipefail
-
           cd dist
-
           shasum -a 256 \
             GlobalRefreshX-unsigned.ipa \
             | tee GlobalRefreshX-unsigned.ipa.sha256
 
-      - name: Upload unsigned IPA
+      - name: Upload Alpha 47 R1 Adaptive unsigned IPA
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: GlobalRefreshX-Alpha46-Clean-unsigned-IPA
+          name: GlobalRefreshX-Alpha47-R1-Adaptive-unsigned-IPA
           path: |
             ${{ steps.locate.outputs.root }}/dist/GlobalRefreshX-unsigned.ipa
             ${{ steps.locate.outputs.root }}/dist/GlobalRefreshX-unsigned.ipa.sha256
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload build diagnostics
+      - name: Upload Alpha 47 R1 build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: GlobalRefreshX-Alpha46-Clean-build-diagnostics
+          name: GlobalRefreshX-Alpha47-R1-Adaptive-build-diagnostics
           path: |
             ${{ steps.locate.outputs.root }}/build/diagnostics
             ${{ steps.locate.outputs.root }}/build/**/*.log
