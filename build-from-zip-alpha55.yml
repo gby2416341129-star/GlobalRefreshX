@@ -1,0 +1,281 @@
+name: Build GlobalRefresh X Alpha55 Clean Control Runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check Alpha54 Control Center ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="GlobalRefreshX-working-alpha55-controlcenter-livebridge-clean.zip"
+          if [[ ! -f "$ZIP" ]]; then
+            echo "ERROR: Alpha54 Control Center ZIP was not found."
+            echo "Expected:"
+            echo "  $ZIP"
+            echo ""
+            echo "Repository root contains:"
+            ls -lah
+            exit 1
+          fi
+          echo "Found Alpha54 Control Center source:"
+          ls -lh "$ZIP"
+
+      - name: Extract Alpha54 Control Center
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf source
+          mkdir -p source
+          ditto -x -k \
+            GlobalRefreshX-working-alpha55-controlcenter-livebridge-clean.zip \
+            source
+          echo "Extraction completed."
+          echo ""
+          echo "Top-level extracted contents:"
+          ls -lah source
+
+      - name: Locate GlobalRefresh X project
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_SCRIPT="$(find source \
+            -maxdepth 5 \
+            -type f \
+            -path '*/scripts/build_unsigned_ipa.sh' \
+            -print \
+            -quit)"
+
+          if [[ -z "$BUILD_SCRIPT" ]]; then
+            echo "ERROR: Could not locate scripts/build_unsigned_ipa.sh"
+            echo ""
+            find source -maxdepth 5 -print | sort
+            exit 1
+          fi
+
+          ROOT="${BUILD_SCRIPT%/scripts/build_unsigned_ipa.sh}"
+          echo "GlobalRefresh X project root:"
+          echo "$ROOT"
+
+          test -d "$ROOT/pip_swift"
+          test -d "$ROOT/scripts"
+          test -f "$ROOT/scripts/verify_project.sh"
+          test -f "$ROOT/scripts/select_xcode_26.sh"
+          test -f "$ROOT/scripts/build_unsigned_ipa.sh"
+
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+
+      - name: Show Xcode environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "macOS:"
+          sw_vers
+          echo ""
+          echo "Current Xcode:"
+          xcodebuild -version
+          echo ""
+          echo "Current iPhoneOS SDK:"
+          xcrun --sdk iphoneos --show-sdk-version
+          echo ""
+          echo "Developer directory:"
+          xcode-select -p
+
+      - name: Select Xcode 26+
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/select_xcode_26.sh
+          ./scripts/select_xcode_26.sh
+          echo ""
+          echo "Selected Xcode:"
+          xcodebuild -version
+          echo ""
+          echo "Selected iPhoneOS SDK:"
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Verify Alpha54 Control Center project
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/verify_project.sh
+          ./scripts/verify_project.sh
+
+      - name: Verify bundled CocoaPods
+        working-directory: ${{ steps.locate.outputs.root }}/pip_swift
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Checking bundled CocoaPods files..."
+
+          if [[ ! -f "Podfile.lock" ]]; then
+            echo "ERROR: pip_swift/Podfile.lock is missing."
+            exit 1
+          fi
+
+          if [[ ! -f "Pods/Manifest.lock" ]]; then
+            echo "ERROR: pip_swift/Pods/Manifest.lock is missing."
+            exit 1
+          fi
+
+          if ! cmp -s "Podfile.lock" "Pods/Manifest.lock"; then
+            echo "ERROR: Podfile.lock and Pods/Manifest.lock do not match."
+            echo ""
+            diff -u "Podfile.lock" "Pods/Manifest.lock" || true
+            exit 1
+          fi
+
+          echo "Bundled Pods match Podfile.lock."
+          echo "No pod install is required."
+
+      - name: Xcode workspace preflight
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/diagnostics
+
+          echo "Checking workspace and scheme..."
+          xcodebuild \
+            -workspace pip_swift/pip_swift.xcworkspace \
+            -scheme pip_swift \
+            -configuration Release \
+            -sdk iphoneos \
+            -list \
+            | tee build/diagnostics/xcodebuild-list.log
+
+          echo ""
+          echo "Resolving final Xcode build settings..."
+          xcodebuild \
+            -workspace pip_swift/pip_swift.xcworkspace \
+            -scheme pip_swift \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -showBuildSettings \
+            | tee build/diagnostics/xcodebuild-settings.log
+
+      - name: Build unsigned IPA
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/build_unsigned_ipa.sh
+          echo "Starting real Xcode iPhoneOS Release build for Alpha55 Clean Control Runtime..."
+          ./scripts/build_unsigned_ipa.sh
+
+      - name: Verify generated IPA
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IPA="dist/GlobalRefreshX-unsigned.ipa"
+
+          if [[ ! -f "$IPA" ]]; then
+            echo "ERROR: unsigned IPA was not generated."
+            exit 1
+          fi
+
+          echo "IPA generated successfully:"
+          ls -lh "$IPA"
+          echo ""
+          echo "IPA contents:"
+          unzip -l "$IPA" | head -100
+          echo ""
+
+          if ! unzip -l "$IPA" | grep -q 'Payload/.*\.app/'; then
+            echo "ERROR: IPA does not contain Payload/*.app/"
+            exit 1
+          fi
+
+          echo "IPA structure check passed."
+
+      - name: Audit packaged Alpha55 identity
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IPA="dist/GlobalRefreshX-unsigned.ipa"
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          ditto -x -k "$IPA" "$TMP"
+
+          APP="$(find "$TMP/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          [[ -n "$APP" ]] || { echo "ERROR: host app not found in IPA"; exit 1; }
+          APPEX="$(find "$APP/PlugIns" -maxdepth 1 -type d -name '*.appex' -print -quit)"
+          [[ -n "$APPEX" ]] || { echo "ERROR: Control extension not found in IPA"; exit 1; }
+
+          EXPECTED_VERSION="2.0.0-alpha55"
+          EXPECTED_BUILD="2026090859"
+          HOST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")"
+          HOST_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")"
+          EXT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APPEX/Info.plist")"
+          EXT_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APPEX/Info.plist")"
+
+          printf 'Host: %s (%s)\n' "$HOST_VERSION" "$HOST_BUILD"
+          printf 'Control: %s (%s)\n' "$EXT_VERSION" "$EXT_BUILD"
+
+          [[ "$HOST_VERSION" == "$EXPECTED_VERSION" ]] || { echo "ERROR: wrong host version"; exit 1; }
+          [[ "$HOST_BUILD" == "$EXPECTED_BUILD" ]] || { echo "ERROR: wrong host build"; exit 1; }
+          [[ "$EXT_VERSION" == "$EXPECTED_VERSION" ]] || { echo "ERROR: wrong extension version"; exit 1; }
+          [[ "$EXT_BUILD" == "$EXPECTED_BUILD" ]] || { echo "ERROR: wrong extension build"; exit 1; }
+
+          EXT_EXEC="$APPEX/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APPEX/Info.plist")"
+          strings "$EXT_EXEC" | grep -q 'com.yoroin.globalrefresh.control.runtime.v3' || {
+            echo "ERROR: expected fresh Control kind not found in extension binary"
+            exit 1
+          }
+
+          echo "Packaged host/extension identity audit passed."
+
+      - name: Generate SHA256
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          shasum -a 256 \
+            GlobalRefreshX-unsigned.ipa \
+            | tee GlobalRefreshX-unsigned.ipa.sha256
+
+      - name: Upload Alpha54 Control Center unsigned IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GlobalRefreshX-Alpha55-ControlCenter-unsigned-IPA
+          path: |
+            ${{ steps.locate.outputs.root }}/dist/GlobalRefreshX-unsigned.ipa
+            ${{ steps.locate.outputs.root }}/dist/GlobalRefreshX-unsigned.ipa.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Alpha54 Control Center build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GlobalRefreshX-Alpha55-ControlCenter-build-diagnostics
+          path: |
+            ${{ steps.locate.outputs.root }}/build/diagnostics
+            ${{ steps.locate.outputs.root }}/build/**/*.log
+            ${{ steps.locate.outputs.root }}/build/**/*.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
