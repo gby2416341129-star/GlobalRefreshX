@@ -1,0 +1,238 @@
+name: Build GlobalRefresh X Alpha57-r1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Locate Alpha57 source archive
+        id: archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Repository root:"
+          ls -lah
+
+          # iOS/Safari/GitHub uploads can occasionally append an extra extension.
+          # Match the stable Alpha57 prefix, then validate the actual bytes as TAR.
+          CANDIDATE_FILE="$(mktemp)"
+          find . -maxdepth 1 -type f \
+            \( -name 'GlobalRefreshX-Alpha57-Source.tar' \
+               -o -name 'GlobalRefreshX-Alpha57-Source.tar.*' \
+               -o -name 'GlobalRefreshX-Alpha57-Source.tar*' \) \
+            -print | sort > "$CANDIDATE_FILE"
+
+          COUNT="$(wc -l < "$CANDIDATE_FILE" | tr -d '[:space:]')"
+          if [[ "$COUNT" == "0" ]]; then
+            echo "ERROR: Alpha57 source archive not found."
+            echo "Upload the file whose base name starts with: GlobalRefreshX-Alpha57-Source.tar"
+            exit 1
+          fi
+
+          if [[ "$COUNT" != "1" ]]; then
+            echo "ERROR: More than one Alpha57 source archive candidate was found:"
+            sed 's/^/  /' "$CANDIDATE_FILE"
+            echo "Delete the duplicates and keep only one Alpha57 source archive."
+            exit 1
+          fi
+
+          ARCHIVE="$(sed -n '1p' "$CANDIDATE_FILE")"
+          rm -f "$CANDIDATE_FILE"
+          echo "Using archive: $ARCHIVE"
+          file "$ARCHIVE"
+          echo "Testing TAR directory..."
+          tar -tf "$ARCHIVE" >/dev/null
+          echo "Alpha57 source archive is valid TAR."
+          echo "path=$ARCHIVE" >> "$GITHUB_OUTPUT"
+
+      - name: Extract Alpha57 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="${{ steps.archive.outputs.path }}"
+          rm -rf source
+          mkdir -p source
+          tar -xf "$ARCHIVE" -C source
+          test -d source/GlobalRefreshX-Alpha57
+          echo "Extracted Alpha57 source:"
+          ls -lah source/GlobalRefreshX-Alpha57 | head -80
+
+      - name: Locate GlobalRefresh X Alpha57 project
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="source/GlobalRefreshX-Alpha57"
+          test -f "$ROOT/scripts/build_unsigned_ipa.sh"
+          test -f "$ROOT/scripts/verify_project.sh"
+          test -f "$ROOT/scripts/select_xcode_26.sh"
+          test -d "$ROOT/pip_swift"
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+          echo "Project root: $ROOT"
+
+      - name: Show Xcode environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          sw_vers
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcode-select -p
+
+      - name: Select Xcode 26+
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/select_xcode_26.sh
+          ./scripts/select_xcode_26.sh
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Verify Alpha57 project
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/verify_project.sh
+          ./scripts/verify_project.sh
+
+      - name: Verify bundled CocoaPods
+        working-directory: ${{ steps.locate.outputs.root }}/pip_swift
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f Podfile.lock
+          test -f Pods/Manifest.lock
+          cmp -s Podfile.lock Pods/Manifest.lock || {
+            echo "ERROR: Podfile.lock and Pods/Manifest.lock do not match."
+            diff -u Podfile.lock Pods/Manifest.lock || true
+            exit 1
+          }
+          echo "Bundled CocoaPods are consistent."
+
+      - name: Xcode workspace preflight
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/diagnostics
+          xcodebuild \
+            -workspace pip_swift/pip_swift.xcworkspace \
+            -scheme pip_swift \
+            -configuration Release \
+            -sdk iphoneos \
+            -list \
+            | tee build/diagnostics/xcodebuild-list.log
+
+          xcodebuild \
+            -workspace pip_swift/pip_swift.xcworkspace \
+            -scheme pip_swift \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -showBuildSettings \
+            | tee build/diagnostics/xcodebuild-settings.log
+
+      - name: Build Alpha57 unsigned IPA
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/build_unsigned_ipa.sh
+          ./scripts/build_unsigned_ipa.sh
+
+      - name: Verify Alpha57 generated IPA
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IPA="dist/GlobalRefreshX-unsigned.ipa"
+          test -f "$IPA"
+          unzip -tq "$IPA"
+          unzip -l "$IPA" | grep -q 'Payload/.*\.app/'
+          echo "IPA container is valid."
+
+      - name: Audit packaged Alpha57 identity
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IPA="dist/GlobalRefreshX-unsigned.ipa"
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          ditto -x -k "$IPA" "$TMP"
+
+          APP="$(find "$TMP/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          [[ -n "$APP" ]] || { echo "ERROR: host app not found"; exit 1; }
+          APPEX="$(find "$APP/PlugIns" -maxdepth 1 -type d -name '*.appex' -print -quit)"
+          [[ -n "$APPEX" ]] || { echo "ERROR: Control extension not found"; exit 1; }
+
+          EXPECTED_VERSION="2.0.0-alpha57"
+          EXPECTED_BUILD="2026090861"
+          HOST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")"
+          HOST_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")"
+          EXT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APPEX/Info.plist")"
+          EXT_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APPEX/Info.plist")"
+
+          printf 'Host: %s (%s)\n' "$HOST_VERSION" "$HOST_BUILD"
+          printf 'Control: %s (%s)\n' "$EXT_VERSION" "$EXT_BUILD"
+
+          [[ "$HOST_VERSION" == "$EXPECTED_VERSION" ]]
+          [[ "$HOST_BUILD" == "$EXPECTED_BUILD" ]]
+          [[ "$EXT_VERSION" == "$EXPECTED_VERSION" ]]
+          [[ "$EXT_BUILD" == "$EXPECTED_BUILD" ]]
+
+          EXT_EXEC="$APPEX/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APPEX/Info.plist")"
+          strings "$EXT_EXEC" | grep -q 'com.yoroin.globalrefresh.control.runtime.v5' || {
+            echo "ERROR: Alpha57 Control kind v5 not found in extension binary."
+            exit 1
+          }
+
+          echo "Alpha57 host/extension identity audit passed."
+
+      - name: Generate Alpha57 SHA256
+        working-directory: ${{ steps.locate.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          shasum -a 256 GlobalRefreshX-unsigned.ipa | tee GlobalRefreshX-unsigned.ipa.sha256
+
+      - name: Upload Alpha57 unsigned IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GlobalRefreshX-Alpha57-unsigned-IPA
+          path: |
+            ${{ steps.locate.outputs.root }}/dist/GlobalRefreshX-unsigned.ipa
+            ${{ steps.locate.outputs.root }}/dist/GlobalRefreshX-unsigned.ipa.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Alpha57 build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GlobalRefreshX-Alpha57-build-diagnostics
+          path: |
+            ${{ steps.locate.outputs.root }}/build/diagnostics
+            ${{ steps.locate.outputs.root }}/build/**/*.log
+            ${{ steps.locate.outputs.root }}/build/**/*.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
