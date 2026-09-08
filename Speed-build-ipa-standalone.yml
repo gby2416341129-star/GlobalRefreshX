@@ -1,0 +1,67 @@
+name: Build Speed IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check source layout
+        run: |
+          test -f pip_swift/pip_swift.xcworkspace/contents.xcworkspacedata
+          test -f pip_swift/Podfile.lock
+          test -f pip_swift/Pods/Manifest.lock
+          test -f pip_swift/pip_swift.xcodeproj/project.pbxproj
+          cmp -s pip_swift/Podfile.lock pip_swift/Pods/Manifest.lock
+
+      - name: Show selected Xcode
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Build unsigned Speed IPA
+        run: |
+          set -euo pipefail
+          mkdir -p build/diagnostics dist/Payload
+          xcodebuild \
+            -workspace pip_swift/pip_swift.xcworkspace \
+            -scheme pip_swift \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath "$GITHUB_WORKSPACE/build/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            clean build 2>&1 | tee build/diagnostics/xcodebuild.log
+          cp -R build/DerivedData/Build/Products/Release-iphoneos/Speed.app dist/Payload/
+          test -d dist/Payload/Speed.app
+          (cd dist && /usr/bin/zip -qry Speed-unsigned.ipa Payload)
+          shasum -a 256 dist/Speed-unsigned.ipa > dist/Speed-unsigned.ipa.sha256
+          unzip -t dist/Speed-unsigned.ipa
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-Xcode-Diagnostics
+          path: build/diagnostics/xcodebuild.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-IPA
+          path: |
+            dist/Speed-unsigned.ipa
+            dist/Speed-unsigned.ipa.sha256
+          if-no-files-found: error
