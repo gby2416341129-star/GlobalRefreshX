@@ -1,0 +1,5 @@
++check 'Laboratory exposes all requested latency controls' "grep -q '低延迟事件分发' '$APP/PiPViews.swift' && grep -q '立即呈现' '$APP/PiPViews.swift' && grep -q '连续 UI 更新' '$APP/PiPViews.swift' && grep -q '实验室' '$APP/PiPViews.swift'"
++check 'Laboratory preserves existing Speed glass recipe' "grep -q 'SpeedGlassCard' '$APP/PiPViews.swift' && grep -q 'SpeedGlassSurface(cornerRadius: 20' '$APP/PiPViews.swift' && ! grep -q 'GlassEffectContainer(spacing:' '$APP/PiPViews.swift'"
+ check 'Swift concurrency-safe ObservableObject conformance' "grep -q 'SpeedHomeViewModel: @preconcurrency ObservableObject' '$APP/PiPViews.swift'"
+ check 'SceneDelegate deinit does not cross MainActor boundary' "! grep -A3 'deinit' '$APP/SceneDelegate.swift' | grep -q 'RefreshRateController.shared.stop()'"
+ check 'Release diagnostics startup is DEBUG-only' "grep -A18 '#if DEBUG' '$APP/AppDelegate.swift' | grep -q 'MetricKitLogger.shared.start()' && grep -q '#if DEBUG' '$APP/AppDebugLogger.swift'"
