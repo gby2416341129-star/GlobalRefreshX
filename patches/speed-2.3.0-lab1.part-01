@@ -1,0 +1,180 @@
+@@ -34,13 +40,18 @@ final class SpeedHomeViewModel: @preconcurrency ObservableObject {
+         onCustomizeHeight: @escaping () -> Void,
+         onToggleAppearanceMode: @escaping () -> Void,
+         onClearCache: @escaping () -> Void,
+-        onSetPiPEngineRoute: @escaping (PiPEngineRoute) -> Void
++        onSetPiPEngineRoute: @escaping (PiPEngineRoute) -> Void,
++        onSetLatencyExperimentAll: @escaping (Bool) -> Void,
++        onSetLowLatencyEventDispatch: @escaping (Bool) -> Void,
++        onSetImmediatePresentation: @escaping (Bool) -> Void,
++        onSetContinuousUpdates: @escaping (Bool) -> Void
+     ) {
+         self.isPiPActive = isPiPActive
+         self.presentationState = presentationState
+         self.pipHeight = pipHeight
+         self.isCurrentAppearanceDark = isCurrentAppearanceDark
+         self.pipEngineRoute = pipEngineRoute
++        self.latencyExperimentState = latencyExperimentState
+         self.onTogglePiP = onTogglePiP
+         self.onHidePiP = onHidePiP
+         self.onStartAndHidePiP = onStartAndHidePiP
+@@ -49,6 +60,10 @@ final class SpeedHomeViewModel: @preconcurrency ObservableObject {
+         self.onToggleAppearanceMode = onToggleAppearanceMode
+         self.onClearCache = onClearCache
+         self.onSetPiPEngineRoute = onSetPiPEngineRoute
++        self.onSetLatencyExperimentAll = onSetLatencyExperimentAll
++        self.onSetLowLatencyEventDispatch = onSetLowLatencyEventDispatch
++        self.onSetImmediatePresentation = onSetImmediatePresentation
++        self.onSetContinuousUpdates = onSetContinuousUpdates
+     }
+ 
+     func update(
+@@ -56,13 +71,15 @@ final class SpeedHomeViewModel: @preconcurrency ObservableObject {
+         presentationState: HomePresentationState,
+         pipHeight: String,
+         isCurrentAppearanceDark: Bool,
+-        pipEngineRoute: PiPEngineRoute
++        pipEngineRoute: PiPEngineRoute,
++        latencyExperimentState: LatencyExperimentState
+     ) {
+         guard self.isPiPActive != isPiPActive
+             || self.presentationState != presentationState
+             || self.pipHeight != pipHeight
+             || self.isCurrentAppearanceDark != isCurrentAppearanceDark
+             || self.pipEngineRoute != pipEngineRoute
++            || self.latencyExperimentState != latencyExperimentState
+         else { return }
+ 
+         objectWillChange.send()
+@@ -71,11 +88,13 @@ final class SpeedHomeViewModel: @preconcurrency ObservableObject {
+         self.pipHeight = pipHeight
+         self.isCurrentAppearanceDark = isCurrentAppearanceDark
+         self.pipEngineRoute = pipEngineRoute
++        self.latencyExperimentState = latencyExperimentState
+     }
+ }
+ 
+-/// Speed's single-screen control surface. It intentionally contains no live
+-/// frame sampler, network reader, update checker, or continuously animated view.
++/// Speed's control surface plus an opt-in Laboratory page. The existing Speed
++/// controls remain unchanged; the Laboratory reuses the same visual system and
++/// contains no frame sampler, network reader, or update checker.
+ struct PiPHomeView: View {
+     @ObservedObject var model: SpeedHomeViewModel
+ 
+@@ -92,7 +111,18 @@ struct PiPHomeView: View {
+     private var onToggleAppearanceMode: () -> Void { model.onToggleAppearanceMode }
+     private var onClearCache: () -> Void { model.onClearCache }
+     private var onSetPiPEngineRoute: (PiPEngineRoute) -> Void { model.onSetPiPEngineRoute }
++    private var latencyExperimentState: LatencyExperimentState { model.latencyExperimentState }
++    private var onSetLatencyExperimentAll: (Bool) -> Void { model.onSetLatencyExperimentAll }
++    private var onSetLowLatencyEventDispatch: (Bool) -> Void { model.onSetLowLatencyEventDispatch }
++    private var onSetImmediatePresentation: (Bool) -> Void { model.onSetImmediatePresentation }
++    private var onSetContinuousUpdates: (Bool) -> Void { model.onSetContinuousUpdates }
++
++    private enum Page: Hashable {
++        case speed
++        case laboratory
++    }
+ 
++    @State private var selectedPage: Page = .speed
+     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+ 
+     var body: some View {
+@@ -103,9 +133,18 @@ struct PiPHomeView: View {
+                 ScrollView(showsIndicators: false) {
+                     VStack(spacing: proxy.size.height < 700 ? 15 : 20) {
+                         header
+-                        statusCard
+-                        controls
+-                        settingsCard
++                        pageSwitcher
++
++                        Group {
++                            switch selectedPage {
++                            case .speed:
++                                speedPage
++                            case .laboratory:
++                                laboratoryPage
++                            }
++                        }
++                        .transition(reduceMotion ? .identity : .opacity)
++
+                         Spacer(minLength: 8)
+                     }
+                     .padding(.horizontal, 20)
+@@ -118,6 +157,13 @@ struct PiPHomeView: View {
+         }
+     }
+ 
++    @ViewBuilder
++    private var speedPage: some View {
++        statusCard
++        controls
++        settingsCard
++    }
++
+     private var header: some View {
+         HStack(spacing: 12) {
+             VStack(alignment: .leading, spacing: 3) {
+@@ -152,6 +198,171 @@ struct PiPHomeView: View {
+         .fixedSize(horizontal: true, vertical: true)
+     }
+ 
++    private var pageSwitcher: some View {
++        HStack(spacing: 8) {
++            pageButton(
++                title: "Speed",
++                systemName: "bolt.fill",
++                page: .speed
++            )
++            pageButton(
++                title: L10n.text("实验室", "Laboratory"),
++                systemName: "flask.fill",
++                page: .laboratory
++            )
++        }
++        .padding(6)
++        .background(SpeedGlassSurface(cornerRadius: 20, isInteractive: false))
++    }
++
++    private func pageButton(title: String, systemName: String, page: Page) -> some View {
++        let selected = selectedPage == page
++        return Button {
++            UIImpactFeedbackGenerator(style: .light).impactOccurred()
++            if reduceMotion {
++                selectedPage = page
++            } else {
++                withAnimation(.smooth(duration: 0.22)) {
++                    selectedPage = page
++                }
++            }
++        } label: {
++            HStack(spacing: 7) {
++                Image(systemName: systemName)
++                    .font(.system(size: 14, weight: .semibold))
++                Text(title)
++                    .font(.subheadline.weight(.semibold))
++            }
++            .foregroundStyle(selected ? Color.white : Color.primary)
++            .frame(maxWidth: .infinity, minHeight: 40)
++            .background(
++                selected ? Color.blue : Color.clear,
++                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
++            )
++        }
++        .buttonStyle(SpeedPressButtonStyle())
++        .accessibilityAddTraits(selected ? .isSelected : [])
++    }
++
++    private var laboratoryPage: some View {
++        VStack(spacing: 12) {
++            SpeedGlassCard {
++                VStack(alignment: .leading, spacing: 16) {
++                    HStack(spacing: 12) {
++                        Image(systemName: "waveform.path.ecg")
++                            .font(.system(size: 20, weight: .semibold))
++                            .foregroundStyle(Color.cyan)
++                            .frame(width: 46, height: 46)
++                            .background(Color.cyan.opacity(0.11), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
++
