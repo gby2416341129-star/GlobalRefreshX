@@ -1,0 +1,95 @@
+name: Build Speed 2.1.8 IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Unpack Speed 2.1.8 source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          archive="$GITHUB_WORKSPACE/Speed-2.1.8-Source.tar.gz"
+          test -f "$archive" || {
+            echo 'Missing Speed-2.1.8-Source.tar.gz in repository root.' >&2
+            exit 2
+          }
+
+          rm -rf "$GITHUB_WORKSPACE/source"
+          mkdir -p "$GITHUB_WORKSPACE/source"
+          tar -xzf "$archive" -C "$GITHUB_WORKSPACE/source"
+
+          workspace_data="$(find "$GITHUB_WORKSPACE/source" -type f -path '*/pip_swift/pip_swift.xcworkspace/contents.xcworkspacedata' -print -quit)"
+          test -n "$workspace_data" || {
+            echo 'The source archive does not contain the Speed Xcode workspace.' >&2
+            exit 2
+          }
+
+          ios_dir="$(dirname "$(dirname "$workspace_data")")"
+          project_root="$(dirname "$ios_dir")"
+
+          test -x "$project_root/scripts/select_xcode_26.sh"
+          test -x "$project_root/scripts/verify_project.sh"
+          test -x "$project_root/scripts/build_unsigned_ipa.sh"
+          test -f "$ios_dir/Podfile.lock"
+          test -f "$ios_dir/Pods/Manifest.lock"
+          cmp -s "$ios_dir/Podfile.lock" "$ios_dir/Pods/Manifest.lock"
+          grep -q 'MARKETING_VERSION = 2.1.8' "$ios_dir/pip_swift.xcodeproj/project.pbxproj"
+          grep -q 'CURRENT_PROJECT_VERSION = 2026090881' "$ios_dir/pip_swift.xcodeproj/project.pbxproj"
+          grep -q 'PRODUCT_NAME = Speed' "$ios_dir/pip_swift.xcodeproj/project.pbxproj"
+
+          echo "PROJECT_ROOT=$project_root" >> "$GITHUB_ENV"
+
+      - name: Select Xcode with iPhoneOS 26+ SDK
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/select_xcode_26.sh"
+
+      - name: Verify Speed source
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/verify_project.sh"
+
+      - name: Build unsigned Speed IPA
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/build_unsigned_ipa.sh"
+
+      - name: Prepare named IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" "$GITHUB_WORKSPACE/out/Speed-2.1.8-unsigned.ipa"
+          unzip -t "$GITHUB_WORKSPACE/out/Speed-2.1.8-unsigned.ipa"
+          shasum -a 256 "$GITHUB_WORKSPACE/out/Speed-2.1.8-unsigned.ipa" > "$GITHUB_WORKSPACE/out/Speed-2.1.8-unsigned.ipa.sha256"
+
+      - name: Upload Xcode diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-2.1.8-Xcode-Diagnostics
+          path: |
+            ${{ env.PROJECT_ROOT }}/build/diagnostics/xcodebuild.log
+            ${{ env.PROJECT_ROOT }}/build/diagnostics/Speed.xcresult
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-2.1.8-IPA
+          path: |
+            out/Speed-2.1.8-unsigned.ipa
+            out/Speed-2.1.8-unsigned.ipa.sha256
+          if-no-files-found: error
