@@ -1,0 +1,145 @@
+name: Build Speed 2.2.0 Final Candidate 1 IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Locate or unpack Speed 2.2.0 Final Candidate 1 source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Repository files near root:"
+          find "$GITHUB_WORKSPACE" -maxdepth 3 -type f -print \
+            | sed "s#^$GITHUB_WORKSPACE/##" \
+            | sort \
+            | head -300
+
+          rm -rf "$GITHUB_WORKSPACE/source"
+
+          archive="$(find "$GITHUB_WORKSPACE" -maxdepth 4 -type f \
+            \( -name 'Speed-2.2.0-Final-Candidate-1-Source.tar.gz' \
+               -o -name 'Speed-2.2.0-Final-Candidate-1-Source.tar.gz*' \
+               -o -iname '*Speed*2.2.0*Final*Candidate*1*Source*.tar.gz*' \) \
+            -print -quit)"
+
+          if [[ -n "$archive" ]]; then
+            echo "Using source archive: ${archive#$GITHUB_WORKSPACE/}"
+            mkdir -p "$GITHUB_WORKSPACE/source"
+            tar -xzf "$archive" -C "$GITHUB_WORKSPACE/source"
+            search_root="$GITHUB_WORKSPACE/source"
+          else
+            echo "No archive found; checking for an extracted source tree."
+            search_root="$GITHUB_WORKSPACE"
+          fi
+
+          workspace_data="$(find "$search_root" -maxdepth 8 -type f \
+            -path '*/pip_swift/pip_swift.xcworkspace/contents.xcworkspacedata' \
+            -print -quit)"
+
+          if [[ -z "$workspace_data" ]]; then
+            echo 'ERROR: Speed 2.2.0 Final Candidate 1 source was not found.' >&2
+            exit 2
+          fi
+
+          ios_dir="$(dirname "$(dirname "$workspace_data")")"
+          project_root="$(dirname "$ios_dir")"
+
+          test -f "$project_root/scripts/select_xcode_26.sh"
+          test -f "$project_root/scripts/verify_project.sh"
+          test -f "$project_root/scripts/build_unsigned_ipa.sh"
+          chmod +x \
+            "$project_root/scripts/select_xcode_26.sh" \
+            "$project_root/scripts/verify_project.sh" \
+            "$project_root/scripts/build_unsigned_ipa.sh"
+
+          test -f "$ios_dir/Podfile.lock"
+          test -f "$ios_dir/Pods/Manifest.lock"
+          cmp -s "$ios_dir/Podfile.lock" "$ios_dir/Pods/Manifest.lock"
+          grep -q 'MARKETING_VERSION = 2.2.0' "$ios_dir/pip_swift.xcodeproj/project.pbxproj"
+          grep -q 'CURRENT_PROJECT_VERSION = 2026090904' "$ios_dir/pip_swift.xcodeproj/project.pbxproj"
+          grep -q 'PRODUCT_NAME = Speed' "$ios_dir/pip_swift.xcodeproj/project.pbxproj"
+
+          echo "PROJECT_ROOT=$project_root" >> "$GITHUB_ENV"
+          echo "IOS_DIR=$ios_dir" >> "$GITHUB_ENV"
+          echo "Resolved project root: $project_root"
+
+      - name: Select Xcode 26+
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/select_xcode_26.sh"
+
+      - name: Verify final candidate source
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/verify_project.sh"
+
+      - name: Build unsigned IPA
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/build_unsigned_ipa.sh"
+
+      - name: Prepare named IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" \
+             "$GITHUB_WORKSPACE/out/Speed-2.2.0-Final-Candidate-1-unsigned.ipa"
+          unzip -t "$GITHUB_WORKSPACE/out/Speed-2.2.0-Final-Candidate-1-unsigned.ipa"
+          shasum -a 256 \
+            "$GITHUB_WORKSPACE/out/Speed-2.2.0-Final-Candidate-1-unsigned.ipa" \
+            > "$GITHUB_WORKSPACE/out/Speed-2.2.0-Final-Candidate-1-unsigned.ipa.sha256"
+
+      - name: Upload Xcode diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-2.2.0-Final-Candidate-1-Xcode-Diagnostics
+          path: |
+            ${{ env.PROJECT_ROOT }}/build/diagnostics/xcodebuild.log
+            ${{ env.PROJECT_ROOT }}/build/diagnostics/Speed.xcresult
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-2.2.0-Final-Candidate-1-IPA
+          path: |
+            out/Speed-2.2.0-Final-Candidate-1-unsigned.ipa
+            out/Speed-2.2.0-Final-Candidate-1-unsigned.ipa.sha256
+          if-no-files-found: error
+
+      - name: Publish rolling prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa="$GITHUB_WORKSPACE/out/Speed-2.2.0-Final-Candidate-1-unsigned.ipa"
+
+          if gh release view dev-latest >/dev/null 2>&1; then
+            gh release upload dev-latest "$ipa" --clobber
+            gh release edit dev-latest \
+              --target "$GITHUB_SHA" \
+              --title "Speed Final Candidate" \
+              --notes "Speed 2.2.0 Final Candidate 1 unsigned IPA. Sign before installation." \
+              --prerelease
+          else
+            gh release create dev-latest "$ipa" \
+              --target "$GITHUB_SHA" \
+              --title "Speed Final Candidate" \
+              --notes "Speed 2.2.0 Final Candidate 1 unsigned IPA. Sign before installation." \
+              --prerelease
+          fi
