@@ -1,4 +1,4 @@
-name: Build Speed 2.1.9 Experimental Fix2 IPA
+name: Build Speed 2.3.0 Laboratory 1 IPA
 
 on:
   workflow_dispatch:
@@ -17,71 +17,58 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Locate or unpack Speed 2.1.9 Experimental Fix2 source
+      - name: Reconstruct Speed 2.3.0 Laboratory 1 source
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Repository files near root:"
-          find "$GITHUB_WORKSPACE" -maxdepth 3 -type f -print \
-            | sed "s#^$GITHUB_WORKSPACE/##" \
-            | sort \
-            | head -300
+          base_archive="$(find "$GITHUB_WORKSPACE" -maxdepth 2 -type f \
+            \( -name 'Speed-2.2.0-Final-Candidate-1-Source.tar.gz' \
+               -o -name 'Speed-2.2.0-Final-Candidate-1-Source.tar.gz*' \
+               -o -iname '*Speed*2.2.0*Final*Candidate*1*Source*.tar.gz*' \) \
+            -print -quit)"
+
+          test -n "$base_archive"
+
+          patch_file="$RUNNER_TEMP/speed-2.3.0-lab1.patch"
+          cat \
+            "$GITHUB_WORKSPACE/patches/speed-2.3.0-lab1.part-00" \
+            "$GITHUB_WORKSPACE/patches/speed-2.3.0-lab1.part-01" \
+            "$GITHUB_WORKSPACE/patches/speed-2.3.0-lab1.part-02" \
+            "$GITHUB_WORKSPACE/patches/speed-2.3.0-lab1.part-03" \
+            "$GITHUB_WORKSPACE/patches/speed-2.3.0-lab1.part-04" \
+            > "$patch_file"
+
+          echo "f98f649da4645157c0da9b282385b97c29a7dbc75b19ab6ae7a3b486304d0b55  $patch_file" | shasum -a 256 -c -
 
           rm -rf "$GITHUB_WORKSPACE/source"
+          mkdir -p "$GITHUB_WORKSPACE/source"
+          tar -xzf "$base_archive" -C "$GITHUB_WORKSPACE/source"
+          patch -d "$GITHUB_WORKSPACE/source" -p1 < "$patch_file"
 
-          archive="$(find "$GITHUB_WORKSPACE" -maxdepth 4 -type f \
-            \( -name 'Speed-2.1.9-Experimental-Fix2-Source.tar.gz' \
-               -o -name 'Speed-2.1.9-Experimental-Fix2-Source.tar.gz*' \
-               -o -iname '*Speed*2.1.9*Experimental*Fix2*Source*.tar.gz*' \) \
-            -print -quit)"
-
-          if [[ -n "$archive" ]]; then
-            echo "Using source archive: ${archive#$GITHUB_WORKSPACE/}"
-            mkdir -p "$GITHUB_WORKSPACE/source"
-            tar -xzf "$archive" -C "$GITHUB_WORKSPACE/source"
-            search_root="$GITHUB_WORKSPACE/source"
-          else
-            echo "No archive found; checking for an extracted source tree."
-            search_root="$GITHUB_WORKSPACE"
-          fi
-
-          workspace_data="$(find "$search_root" -maxdepth 8 -type f \
-            -path '*/pip_swift/pip_swift.xcworkspace/contents.xcworkspacedata' \
-            -print -quit)"
-
-          if [[ -z "$workspace_data" ]]; then
-            echo 'ERROR: Speed 2.1.9 Experimental Fix2 source was not found.' >&2
-            exit 2
-          fi
-
-          ios_dir="$(dirname "$(dirname "$workspace_data")")"
-          project_root="$(dirname "$ios_dir")"
+          project_root="$GITHUB_WORKSPACE/source"
+          ios_dir="$project_root/pip_swift"
 
           test -f "$project_root/scripts/select_xcode_26.sh"
           test -f "$project_root/scripts/verify_project.sh"
           test -f "$project_root/scripts/build_unsigned_ipa.sh"
-          chmod +x \
-            "$project_root/scripts/select_xcode_26.sh" \
-            "$project_root/scripts/verify_project.sh" \
-            "$project_root/scripts/build_unsigned_ipa.sh"
+          chmod +x "$project_root/scripts/"*.sh
 
           test -f "$ios_dir/Podfile.lock"
           test -f "$ios_dir/Pods/Manifest.lock"
           cmp -s "$ios_dir/Podfile.lock" "$ios_dir/Pods/Manifest.lock"
-          grep -q 'MARKETING_VERSION = 2.1.9' "$ios_dir/pip_swift.xcodeproj/project.pbxproj"
-          grep -q 'CURRENT_PROJECT_VERSION = 2026090903' "$ios_dir/pip_swift.xcodeproj/project.pbxproj"
+          grep -q 'MARKETING_VERSION = 2.3.0' "$ios_dir/pip_swift.xcodeproj/project.pbxproj"
+          grep -q 'CURRENT_PROJECT_VERSION = 2026090905' "$ios_dir/pip_swift.xcodeproj/project.pbxproj"
           grep -q 'PRODUCT_NAME = Speed' "$ios_dir/pip_swift.xcodeproj/project.pbxproj"
 
           echo "PROJECT_ROOT=$project_root" >> "$GITHUB_ENV"
           echo "IOS_DIR=$ios_dir" >> "$GITHUB_ENV"
-          echo "Resolved project root: $project_root"
 
       - name: Select Xcode 26+
         shell: bash
         run: "$PROJECT_ROOT/scripts/select_xcode_26.sh"
 
-      - name: Verify aggressive experimental source
+      - name: Verify Laboratory source
         shell: bash
         run: "$PROJECT_ROOT/scripts/verify_project.sh"
 
@@ -89,36 +76,42 @@ jobs:
         shell: bash
         run: "$PROJECT_ROOT/scripts/build_unsigned_ipa.sh"
 
-      - name: Prepare named IPA
+      - name: Prepare release files
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/out"
-          cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" \
-             "$GITHUB_WORKSPACE/out/Speed-2.1.9-Experimental-Fix2-unsigned.ipa"
-          unzip -t "$GITHUB_WORKSPACE/out/Speed-2.1.9-Experimental-Fix2-unsigned.ipa"
-          shasum -a 256 \
-            "$GITHUB_WORKSPACE/out/Speed-2.1.9-Experimental-Fix2-unsigned.ipa" \
-            > "$GITHUB_WORKSPACE/out/Speed-2.1.9-Experimental-Fix2-unsigned.ipa.sha256"
+
+          ipa="$GITHUB_WORKSPACE/out/Speed-2.3.0-Laboratory-1-unsigned.ipa"
+          source_archive="$GITHUB_WORKSPACE/out/Speed-2.3.0-Laboratory-1-Source.tar.gz"
+
+          cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" "$ipa"
+          unzip -t "$ipa"
+          shasum -a 256 "$ipa" > "$ipa.sha256"
+
+          tar -czf "$source_archive" -C "$PROJECT_ROOT" .
+          shasum -a 256 "$source_archive" > "$source_archive.sha256"
 
       - name: Upload Xcode diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Speed-2.1.9-Experimental-Fix2-Xcode-Diagnostics
+          name: Speed-2.3.0-Laboratory-1-Xcode-Diagnostics
           path: |
             ${{ env.PROJECT_ROOT }}/build/diagnostics/xcodebuild.log
             ${{ env.PROJECT_ROOT }}/build/diagnostics/Speed.xcresult
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Upload unsigned IPA
+      - name: Upload unsigned IPA and source
         uses: actions/upload-artifact@v4
         with:
-          name: Speed-2.1.9-Experimental-Fix2-IPA
+          name: Speed-2.3.0-Laboratory-1
           path: |
-            out/Speed-2.1.9-Experimental-Fix2-unsigned.ipa
-            out/Speed-2.1.9-Experimental-Fix2-unsigned.ipa.sha256
+            out/Speed-2.3.0-Laboratory-1-unsigned.ipa
+            out/Speed-2.3.0-Laboratory-1-unsigned.ipa.sha256
+            out/Speed-2.3.0-Laboratory-1-Source.tar.gz
+            out/Speed-2.3.0-Laboratory-1-Source.tar.gz.sha256
           if-no-files-found: error
 
       - name: Publish rolling prerelease
@@ -127,19 +120,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ipa="$GITHUB_WORKSPACE/out/Speed-2.1.9-Experimental-Fix2-unsigned.ipa"
+          ipa="$GITHUB_WORKSPACE/out/Speed-2.3.0-Laboratory-1-unsigned.ipa"
+          source_archive="$GITHUB_WORKSPACE/out/Speed-2.3.0-Laboratory-1-Source.tar.gz"
 
           if gh release view dev-latest >/dev/null 2>&1; then
-            gh release upload dev-latest "$ipa" --clobber
+            gh release upload dev-latest "$ipa" "$source_archive" --clobber
             gh release edit dev-latest \
               --target "$GITHUB_SHA" \
-              --title "Speed Experimental Build" \
-              --notes "Speed 2.1.9 Experimental Fix2 unsigned IPA. Sign before installation." \
+              --title "Speed Laboratory Build" \
+              --notes "Speed 2.3.0 Laboratory 1. Existing Speed UI/core retained; Laboratory UIUpdateLink latency experiments are opt-in and OFF on launch. Unsigned IPA: sign before installation." \
               --prerelease
           else
-            gh release create dev-latest "$ipa" \
+            gh release create dev-latest "$ipa" "$source_archive" \
               --target "$GITHUB_SHA" \
-              --title "Speed Experimental Build" \
-              --notes "Speed 2.1.9 Experimental Fix2 unsigned IPA. Sign before installation." \
+              --title "Speed Laboratory Build" \
+              --notes "Speed 2.3.0 Laboratory 1. Existing Speed UI/core retained; Laboratory UIUpdateLink latency experiments are opt-in and OFF on launch. Unsigned IPA: sign before installation." \
               --prerelease
           fi
