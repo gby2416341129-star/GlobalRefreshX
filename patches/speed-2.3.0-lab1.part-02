@@ -1,0 +1,181 @@
++                        VStack(alignment: .leading, spacing: 3) {
++                            Text(L10n.text("Latency 实验", "Latency Lab"))
++                                .font(.headline)
++                            Text(L10n.text("独立于 Speed 主功能的低延迟实验策略", "Low-latency experiments isolated from Speed's core path"))
++                                .font(.caption)
++                                .foregroundStyle(.secondary)
++                        }
++
++                        Spacer(minLength: 8)
++
++                        Text(latencyExperimentState.updateLinkActive
++                             ? L10n.text("运行中", "Active")
++                             : L10n.text("未启用", "Off"))
++                            .font(.caption.weight(.semibold))
++                            .foregroundStyle(latencyExperimentState.updateLinkActive ? Color.green : Color.secondary)
++                    }
++
++                    Toggle(
++                        L10n.text("一键开启全部实验", "Enable all experiments"),
++                        isOn: Binding(
++                            get: { latencyExperimentState.allPreferencesEnabled },
++                            set: { enabled in
++                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
++                                onSetLatencyExperimentAll(enabled)
++                            }
++                        )
++                    )
++                    .font(.subheadline.weight(.semibold))
++                    .tint(.blue)
++                }
++            }
++
++            SpeedGlassCard {
++                VStack(spacing: 0) {
++                    laboratoryToggleRow(
++                        title: L10n.text("低延迟事件分发", "Low-latency event dispatch"),
++                        subtitle: L10n.text("请求系统更早分发符合条件的输入事件", "Request earlier dispatch for eligible input events"),
++                        systemName: "hand.tap.fill",
++                        isOn: latencyExperimentState.lowLatencyEventDispatchEnabled,
++                        onChange: onSetLowLatencyEventDispatch
++                    )
++                    divider
++                    laboratoryToggleRow(
++                        title: L10n.text("立即呈现", "Immediate presentation"),
++                        subtitle: L10n.text("请求当前 UI 更新尽快提交显示", "Request the current UI update to present immediately"),
++                        systemName: "rectangle.and.hand.point.up.left.fill",
++                        isOn: latencyExperimentState.immediatePresentationEnabled,
++                        onChange: onSetImmediatePresentation
++                    )
++                    divider
++                    laboratoryToggleRow(
++                        title: L10n.text("连续 UI 更新", "Continuous UI updates"),
++                        subtitle: L10n.text("持续请求 UI 更新，并保持 120Hz 更新偏好", "Continuously request UI updates with a 120 Hz preference"),
++                        systemName: "arrow.triangle.2.circlepath",
++                        isOn: latencyExperimentState.continuousUpdatesEnabled,
++                        onChange: onSetContinuousUpdates
++                    )
++                }
++            }
++
++            Text(L10n.text(
++                "实验功能不会替换现有 Speed 120Hz 路径；部分选项可能增加功耗，实际效果由 iOS 决定。",
++                "These experiments do not replace Speed's existing 120 Hz path. Some options may use more power, and iOS remains the final arbiter."
++            ))
++            .font(.caption)
++            .foregroundStyle(.secondary)
++            .padding(.horizontal, 4)
++            .frame(maxWidth: .infinity, alignment: .leading)
++        }
++    }
++
++    private func laboratoryToggleRow(
++        title: String,
++        subtitle: String,
++        systemName: String,
++        isOn: Bool,
++        onChange: @escaping (Bool) -> Void
++    ) -> some View {
++        Toggle(
++            isOn: Binding(
++                get: { isOn },
++                set: { enabled in
++                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
++                    onChange(enabled)
++                }
++            )
++        ) {
++            HStack(spacing: 13) {
++                Image(systemName: systemName)
++                    .font(.system(size: 16, weight: .semibold))
++                    .foregroundStyle(Color.blue)
++                    .frame(width: 34, height: 34)
++                    .background(Color.blue.opacity(0.11), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
++
++                VStack(alignment: .leading, spacing: 3) {
++                    Text(title)
++                        .font(.body.weight(.medium))
++                    Text(subtitle)
++                        .font(.caption)
++                        .foregroundStyle(.secondary)
++                        .fixedSize(horizontal: false, vertical: true)
++                }
++            }
++        }
++        .tint(.blue)
++        .padding(.vertical, 12)
++    }
++
+     private var statusCard: some View {
+         SpeedGlassCard {
+             VStack(alignment: .leading, spacing: 18) {
+diff --git a/pip_swift/pip_swift/RefreshRateController.swift b/pip_swift/pip_swift/RefreshRateController.swift
+index 90b6deaba152c673ef2e21d68bb8955597c3e042..fd32e5196febcfe93fc01394ebadfe09e437a973 100644
+--- a/pip_swift/pip_swift/RefreshRateController.swift
++++ b/pip_swift/pip_swift/RefreshRateController.swift
+@@ -105,3 +105,136 @@ final class RefreshRateController {
+         // Intentionally empty. Any main-thread work here steals from the 8.33 ms budget.
+     }
+ }
++
++// MARK: - Laboratory / latency experiments
++
++/// User-controlled iOS 26/27 UIUpdateLink experiments.
++///
++/// Important design rule: this controller is completely separate from Speed's
++/// production CADisplayLink policy above.  It creates no UIUpdateLink during
++/// launch, so the stable 120 Hz path stays exactly as before until the user
++/// explicitly enables an experiment from the Laboratory page.
++struct LatencyExperimentState: Equatable {
++    var lowLatencyEventDispatchEnabled = false
++    var immediatePresentationEnabled = false
++    var continuousUpdatesEnabled = false
++    var updateLinkActive = false
++
++    var anyPreferenceEnabled: Bool {
++        lowLatencyEventDispatchEnabled
++            || immediatePresentationEnabled
++            || continuousUpdatesEnabled
++    }
++
++    var allPreferencesEnabled: Bool {
++        lowLatencyEventDispatchEnabled
++            && immediatePresentationEnabled
++            && continuousUpdatesEnabled
++    }
++}
++
++@MainActor
++final class LatencyExperimentController {
++    static let shared = LatencyExperimentController()
++
++    private weak var anchorView: UIView?
++    private var updateLink: UIUpdateLink?
++    private(set) var state = LatencyExperimentState()
++
++    private init() {}
++
++    /// Attaches the experiment to Speed's already-created root view.  Merely
++    /// attaching does not create a UIUpdateLink; creation remains opt-in.
++    func attach(to view: UIView) {
++        anchorView = view
++        if state.anyPreferenceEnabled {
++            rebuildUpdateLink()
++        }
++    }
++
++    func setLowLatencyEventDispatchEnabled(_ enabled: Bool) {
++        guard state.lowLatencyEventDispatchEnabled != enabled else { return }
++        state.lowLatencyEventDispatchEnabled = enabled
++        rebuildUpdateLink()
++    }
++
++    func setImmediatePresentationEnabled(_ enabled: Bool) {
++        guard state.immediatePresentationEnabled != enabled else { return }
++        state.immediatePresentationEnabled = enabled
++        rebuildUpdateLink()
++    }
++
++    func setContinuousUpdatesEnabled(_ enabled: Bool) {
++        guard state.continuousUpdatesEnabled != enabled else { return }
++
