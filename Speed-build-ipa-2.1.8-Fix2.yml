@@ -1,0 +1,65 @@
+name: Build iPhone IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26+
+        run: ./scripts/select_xcode_26.sh
+
+      - name: Verify project policy and Swift syntax
+        run: ./scripts/verify_project.sh
+
+      - name: Build unsigned IPA
+        run: ./scripts/build_unsigned_ipa.sh
+
+      - name: Upload Xcode diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-Xcode-Diagnostics
+          path: |
+            build/diagnostics/xcodebuild.log
+            build/diagnostics/Speed.xcresult
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload Actions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-IPA
+          path: dist/Speed-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Publish rolling prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view dev-latest >/dev/null 2>&1; then
+            gh release upload dev-latest \
+              dist/Speed-unsigned.ipa \
+              --clobber
+            gh release edit dev-latest \
+              --target "$GITHUB_SHA" \
+              --title "Speed Development Build" \
+              --notes "Automatic unsigned iPhone IPA built from main. Sign the IPA with your preferred signing method before installation." \
+              --prerelease
+          else
+            gh release create dev-latest \
+              dist/Speed-unsigned.ipa \
+              --target "$GITHUB_SHA" \
+              --title "Speed Development Build" \
+              --notes "Automatic unsigned iPhone IPA built from main. Sign the IPA with your preferred signing method before installation." \
+              --prerelease
+          fi
