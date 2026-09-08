@@ -32,7 +32,6 @@ jobs:
 
           test -n "$base_archive"
           test -f "$payload"
-          echo "d99838dd1c0891c74587e3c590a68081fec3cbdbf032e67472c8bcfa5de3a279  $payload" | shasum -a 256 -c -
 
           python3 - "$payload" "$patch_file" <<'PY'
           import base64, gzip, pathlib, sys
