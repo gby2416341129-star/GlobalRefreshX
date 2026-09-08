@@ -27,17 +27,25 @@ jobs:
                -o -name 'Speed-2.2.0-Final-Candidate-1-Source.tar.gz*' \
                -o -iname '*Speed*2.2.0*Final*Candidate*1*Source*.tar.gz*' \) \
             -print -quit)"
-          payload="$GITHUB_WORKSPACE/speed-2.3.0-lab1.patch.gz.b64"
+          payload="$RUNNER_TEMP/speed-2.3.0-lab1.patch.gz.b64"
           patch_file="$RUNNER_TEMP/speed-2.3.0-lab1.patch"
 
           test -n "$base_archive"
-          test -f "$payload"
+          cat \
+            "$GITHUB_WORKSPACE/payload/speed-2.3.0-lab1.b64.part-00" \
+            "$GITHUB_WORKSPACE/payload/speed-2.3.0-lab1.b64.part-01" \
+            "$GITHUB_WORKSPACE/payload/speed-2.3.0-lab1.b64.part-02" \
+            "$GITHUB_WORKSPACE/payload/speed-2.3.0-lab1.b64.part-03" \
+            > "$payload"
 
-          python3 - "$payload" "$patch_file" <<'PY'
+          test "$(wc -c < "$payload" | tr -d ' ')" -eq 11652
+          echo "d99838dd1c0891c74587e3c590a68081fec3cbdbf032e67472c8bcfa5de3a279  $payload" | shasum -a 256 -c -
+
+          python3 - "$payload" "$patch_file" <<'PYCODE'
           import base64, gzip, pathlib, sys
           payload = pathlib.Path(sys.argv[1]).read_text().strip()
-          pathlib.Path(sys.argv[2]).write_bytes(gzip.decompress(base64.b64decode(payload)))
-          PY
+          pathlib.Path(sys.argv[2]).write_bytes(gzip.decompress(base64.b64decode(payload, validate=True)))
+          PYCODE
 
           echo "f98f649da4645157c0da9b282385b97c29a7dbc75b19ab6ae7a3b486304d0b55  $patch_file" | shasum -a 256 -c -
 
