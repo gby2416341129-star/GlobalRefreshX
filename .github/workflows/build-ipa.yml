@@ -1,9 +1,9 @@
-name: Build iPhone IPA
+name: Build Speed 2.1.8 Fix2 IPA
 
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [main]
 
 permissions:
   contents: write
@@ -12,54 +12,127 @@ jobs:
   build:
     runs-on: macos-26
     timeout-minutes: 30
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Locate and unpack Speed Fix2 source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Repository files:"
+          find "$GITHUB_WORKSPACE" -maxdepth 3 -type f -print \
+            | sed "s#^$GITHUB_WORKSPACE/##" \
+            | sort \
+            | head -300
+
+          rm -rf "$GITHUB_WORKSPACE/source"
+
+          archive="$(find "$GITHUB_WORKSPACE" -maxdepth 4 -type f \
+            \( -name 'Speed-2.1.8-Fix2-Source.tar.gz' \
+               -o -name 'Speed-2.1.8-Fix2-Source.tar.gz*' \
+               -o -iname '*Speed*2.1.8*Fix2*Source*.tar.gz*' \) \
+            -print -quit)"
+
+          if [[ -z "$archive" ]]; then
+            echo "ERROR: Speed 2.1.8 Fix2 source archive not found." >&2
+            exit 2
+          fi
+
+          echo "Using archive: ${archive#$GITHUB_WORKSPACE/}"
+          mkdir -p "$GITHUB_WORKSPACE/source"
+          tar -xzf "$archive" -C "$GITHUB_WORKSPACE/source"
+
+          workspace_data="$(find "$GITHUB_WORKSPACE/source" -maxdepth 8 -type f \
+            -path '*/pip_swift/pip_swift.xcworkspace/contents.xcworkspacedata' \
+            -print -quit)"
+
+          if [[ -z "$workspace_data" ]]; then
+            echo "ERROR: pip_swift.xcworkspace was not found after extraction." >&2
+            find "$GITHUB_WORKSPACE/source" -maxdepth 4 -type f -print | sort | head -300
+            exit 2
+          fi
+
+          ios_dir="$(dirname "$(dirname "$workspace_data")")"
+          project_root="$(dirname "$ios_dir")"
+
+          echo "PROJECT_ROOT=$project_root" >> "$GITHUB_ENV"
+          echo "IOS_DIR=$ios_dir" >> "$GITHUB_ENV"
+
+          chmod +x \
+            "$project_root/scripts/select_xcode_26.sh" \
+            "$project_root/scripts/verify_project.sh" \
+            "$project_root/scripts/build_unsigned_ipa.sh"
+
+          echo "Resolved project root: $project_root"
+          echo "Resolved iOS directory: $ios_dir"
 
       - name: Select Xcode 26+
-        run: ./scripts/select_xcode_26.sh
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/select_xcode_26.sh"
 
       - name: Verify project policy and Swift syntax
-        run: ./scripts/verify_project.sh
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/verify_project.sh"
 
       - name: Build unsigned IPA
-        run: ./scripts/build_unsigned_ipa.sh
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/build_unsigned_ipa.sh"
+
+      - name: Prepare named IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" \
+             "$GITHUB_WORKSPACE/out/Speed-2.1.8-Fix2-unsigned.ipa"
+          unzip -t "$GITHUB_WORKSPACE/out/Speed-2.1.8-Fix2-unsigned.ipa"
+          shasum -a 256 \
+            "$GITHUB_WORKSPACE/out/Speed-2.1.8-Fix2-unsigned.ipa" \
+            > "$GITHUB_WORKSPACE/out/Speed-2.1.8-Fix2-unsigned.ipa.sha256"
 
       - name: Upload Xcode diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Speed-Xcode-Diagnostics
+          name: Speed-2.1.8-Fix2-Xcode-Diagnostics
           path: |
-            build/diagnostics/xcodebuild.log
-            build/diagnostics/Speed.xcresult
+            ${{ env.PROJECT_ROOT }}/build/diagnostics/xcodebuild.log
+            ${{ env.PROJECT_ROOT }}/build/diagnostics/Speed.xcresult
           if-no-files-found: warn
           retention-days: 14
 
       - name: Upload Actions artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Speed-IPA
-          path: dist/Speed-unsigned.ipa
+          name: Speed-2.1.8-Fix2-IPA
+          path: |
+            out/Speed-2.1.8-Fix2-unsigned.ipa
+            out/Speed-2.1.8-Fix2-unsigned.ipa.sha256
           if-no-files-found: error
 
       - name: Publish rolling prerelease
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
+          set -euo pipefail
+
+          ipa="$GITHUB_WORKSPACE/out/Speed-2.1.8-Fix2-unsigned.ipa"
+
           if gh release view dev-latest >/dev/null 2>&1; then
-            gh release upload dev-latest \
-              dist/Speed-unsigned.ipa \
-              --clobber
+            gh release upload dev-latest "$ipa" --clobber
             gh release edit dev-latest \
               --target "$GITHUB_SHA" \
               --title "Speed Development Build" \
-              --notes "Automatic unsigned iPhone IPA built from main. Sign the IPA with your preferred signing method before installation." \
+              --notes "Speed 2.1.8 Fix2 unsigned IPA. Sign before installation." \
               --prerelease
           else
-            gh release create dev-latest \
-              dist/Speed-unsigned.ipa \
+            gh release create dev-latest "$ipa" \
               --target "$GITHUB_SHA" \
               --title "Speed Development Build" \
-              --notes "Automatic unsigned iPhone IPA built from main. Sign the IPA with your preferred signing method before installation." \
+              --notes "Speed 2.1.8 Fix2 unsigned IPA. Sign before installation." \
               --prerelease
           fi
