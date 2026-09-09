@@ -29,8 +29,6 @@ jobs:
             -print -quit)"
           lab_payload="$RUNNER_TEMP/speed-2.3.0-lab1.patch.gz.b64"
           lab_patch="$RUNNER_TEMP/speed-2.3.0-lab1.patch"
-          hotfix_payload="$GITHUB_WORKSPACE/speed-2.3.1-lab2-hotfix.patch.gz.b64"
-          hotfix_patch="$RUNNER_TEMP/speed-2.3.1-lab2-hotfix.patch"
 
           test -n "$base_archive"
           cat \
@@ -51,20 +49,169 @@ jobs:
 
           echo "f98f649da4645157c0da9b282385b97c29a7dbc75b19ab6ae7a3b486304d0b55  $lab_patch" | shasum -a 256 -c -
 
-          test -f "$hotfix_payload"
-          python3 - "$hotfix_payload" "$hotfix_patch" <<'PYCODE'
-          import base64, gzip, pathlib, sys
-          payload = pathlib.Path(sys.argv[1]).read_text().strip()
-          pathlib.Path(sys.argv[2]).write_bytes(gzip.decompress(base64.b64decode(payload, validate=True)))
-          PYCODE
-
-          echo "648e436670acf5e88599e733148c79648fe0aa8afa995e003f8b31bab287036a  $hotfix_patch" | shasum -a 256 -c -
-
           rm -rf "$GITHUB_WORKSPACE/source"
           mkdir -p "$GITHUB_WORKSPACE/source"
           tar -xzf "$base_archive" -C "$GITHUB_WORKSPACE/source"
           patch -d "$GITHUB_WORKSPACE/source" -p1 < "$lab_patch"
-          patch -d "$GITHUB_WORKSPACE/source" -p1 < "$hotfix_patch"
+
+          python3 - "$GITHUB_WORKSPACE/source" <<'PYHOTFIX'
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1])
+          refresh = root / "pip_swift/pip_swift/RefreshRateController.swift"
+          s = refresh.read_text()
+          start = s.index("@MainActor\nfinal class LatencyExperimentController")
+          brace = s.index("{", start)
+          depth = 0
+          end = None
+          for i, ch in enumerate(s[brace:], start=brace):
+              if ch == "{":
+                  depth += 1
+              elif ch == "}":
+                  depth -= 1
+                  if depth == 0:
+                      end = i + 1
+                      break
+          if end is None:
+              raise RuntimeError("LatencyExperimentController end not found")
+
+          replacement = r'''@MainActor
+          final class LatencyExperimentController {
+              static let shared = LatencyExperimentController()
+
+              private weak var anchorView: UIView?
+              private var updateLink: UIUpdateLink?
+              private var rebuildGeneration: UInt = 0
+              private(set) var state = LatencyExperimentState()
+
+              private init() {}
+
+              func attach(to view: UIView) {
+                  anchorView = view
+                  if state.anyPreferenceEnabled {
+                      scheduleRebuild()
+                  }
+              }
+
+              func setLowLatencyEventDispatchEnabled(_ enabled: Bool) {
+                  guard state.lowLatencyEventDispatchEnabled != enabled else { return }
+                  state.lowLatencyEventDispatchEnabled = enabled
+                  scheduleRebuild()
+              }
+
+              func setImmediatePresentationEnabled(_ enabled: Bool) {
+                  guard state.immediatePresentationEnabled != enabled else { return }
+                  state.immediatePresentationEnabled = enabled
+                  scheduleRebuild()
+              }
+
+              func setContinuousUpdatesEnabled(_ enabled: Bool) {
+                  guard state.continuousUpdatesEnabled != enabled else { return }
+                  state.continuousUpdatesEnabled = enabled
+                  scheduleRebuild()
+              }
+
+              func setAllEnabled(_ enabled: Bool) {
+                  state.lowLatencyEventDispatchEnabled = enabled
+                  state.immediatePresentationEnabled = enabled
+                  state.continuousUpdatesEnabled = enabled
+                  scheduleRebuild()
+              }
+
+              func reconcile() {
+                  guard state.anyPreferenceEnabled else {
+                      stopUpdateLink()
+                      return
+                  }
+                  if updateLink == nil || updateLink?.isEnabled == false {
+                      scheduleRebuild()
+                  }
+              }
+
+              func stopForTeardown() {
+                  rebuildGeneration &+= 1
+                  stopUpdateLink()
+                  anchorView = nil
+                  state = LatencyExperimentState()
+              }
+
+              private func scheduleRebuild() {
+                  rebuildGeneration &+= 1
+                  let generation = rebuildGeneration
+                  DispatchQueue.main.async { [weak self] in
+                      guard let self, generation == self.rebuildGeneration else { return }
+                      self.rebuildUpdateLink()
+                  }
+              }
+
+              private func rebuildUpdateLink() {
+                  stopUpdateLink(resetPreferences: false)
+
+                  guard state.anyPreferenceEnabled,
+                        let anchorView,
+                        let windowScene = anchorView.window?.windowScene
+                  else {
+                      state.updateLinkActive = false
+                      return
+                  }
+
+                  let link = UIUpdateLink(windowScene: windowScene)
+
+                  if state.lowLatencyEventDispatchEnabled {
+                      link.wantsLowLatencyEventDispatch = true
+                  }
+                  if state.immediatePresentationEnabled {
+                      link.wantsImmediatePresentation = true
+                  }
+                  if state.continuousUpdatesEnabled {
+                      link.requiresContinuousUpdates = true
+                      let maximum = Float(max(1, AppDisplayContext.maximumFramesPerSecond))
+                      let preferred = min(Float(FrameRatePreference.targetFrameRate), maximum)
+                      let minimum = min(60.0, preferred)
+                      link.preferredFrameRateRange = CAFrameRateRange(
+                          minimum: minimum,
+                          maximum: preferred,
+                          preferred: preferred
+                      )
+                  }
+
+                  link.isEnabled = true
+                  updateLink = link
+                  state.updateLinkActive = true
+                  AppDebugLogger.log(
+                      "Laboratory UIUpdateLink active: lowLatency=\(state.lowLatencyEventDispatchEnabled), "
+                      + "immediate=\(state.immediatePresentationEnabled), continuous=\(state.continuousUpdatesEnabled)"
+                  )
+              }
+
+              private func stopUpdateLink(resetPreferences: Bool = false) {
+                  updateLink?.isEnabled = false
+                  updateLink = nil
+                  state.updateLinkActive = false
+                  if resetPreferences {
+                      state = LatencyExperimentState()
+                  }
+              }
+          }'''
+
+          s = s[:start] + replacement + s[end:]
+          refresh.write_text(s)
+
+          project = root / "pip_swift/pip_swift.xcodeproj/project.pbxproj"
+          p = project.read_text()
+          p = p.replace("MARKETING_VERSION = 2.3.0;", "MARKETING_VERSION = 2.3.1;")
+          p = p.replace("CURRENT_PROJECT_VERSION = 2026090905;", "CURRENT_PROJECT_VERSION = 2026090906;")
+          project.write_text(p)
+
+          verify = root / "scripts/verify_project.sh"
+          v = verify.read_text()
+          v = v.replace("Speed version 2.3.0", "Speed version 2.3.1")
+          v = v.replace("MARKETING_VERSION = 2.3.0", "MARKETING_VERSION = 2.3.1")
+          v = v.replace("CURRENT_PROJECT_VERSION = 2026090905", "CURRENT_PROJECT_VERSION = 2026090906")
+          v = v.replace("UIUpdateLink(view: anchorView)", "UIUpdateLink(windowScene: windowScene)")
+          verify.write_text(v)
+          PYHOTFIX
 
           project_root="$GITHUB_WORKSPACE/source"
           ios_dir="$project_root/pip_swift"
