@@ -42,7 +42,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base64 --decode "$GITHUB_WORKSPACE/$PATCH_FILE" | gunzip > "$RUNNER_TEMP/speed-2.3.5.patch"
+          python3 - "$GITHUB_WORKSPACE/$PATCH_FILE" "$RUNNER_TEMP/speed-2.3.5.patch" <<'PY'
+          import base64, gzip, pathlib, sys
+          src = pathlib.Path(sys.argv[1]).read_bytes()
+          pathlib.Path(sys.argv[2]).write_bytes(gzip.decompress(base64.b64decode(src)))
+          PY
+
           cd "$PROJECT_ROOT"
           patch --dry-run -p1 < "$RUNNER_TEMP/speed-2.3.5.patch"
           patch -p1 < "$RUNNER_TEMP/speed-2.3.5.patch"
