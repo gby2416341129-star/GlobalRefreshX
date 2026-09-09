@@ -43,7 +43,7 @@ jobs:
           set -euo pipefail
           patch_file="$GITHUB_WORKSPACE/patches/speed-2.3.8-live-resize.patch"
           actual_patch_sha="$(shasum -a 256 "$patch_file" | awk '{print $1}')"
-          test "$actual_patch_sha" = "c6ea9020a7156c590f048e6b2655dc3910fea58b9ecbcf7a6f4660c7bea8c14d"
+          test "$actual_patch_sha" = "f0bedf345b8aa8b801efc624c752469bedefc8f57252dcf41788a2cf3d2c68d8"
 
           cd "$PROJECT_ROOT"
           patch --dry-run -p1 < "$patch_file"
