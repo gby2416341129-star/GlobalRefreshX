@@ -1,0 +1,156 @@
+name: Build Speed 2.3.6 Compatibility Response IPA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-ipa-2.3.6-compat-response.yml'
+      - 'patches/speed-2.3.6-compat-response.patch.gz.b64'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  BASELINE_SOURCE: Speed-2.3.5-Stability-2-Source.tar.gz
+  PATCH_FILE: patches/speed-2.3.6-compat-response.patch.gz.b64
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download Speed 2.3.5 Stability 2 source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE/source"
+          gh release download dev-latest \
+            --pattern "$BASELINE_SOURCE" \
+            --dir "$GITHUB_WORKSPACE/baseline"
+          tar -xzf "$GITHUB_WORKSPACE/baseline/$BASELINE_SOURCE" \
+            -C "$GITHUB_WORKSPACE/source"
+          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/source" >> "$GITHUB_ENV"
+
+      - name: Apply compatibility responsiveness patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$GITHUB_WORKSPACE/$PATCH_FILE" "$RUNNER_TEMP/speed-2.3.6.patch" <<'PY'
+          import base64, gzip, pathlib, sys
+          src = pathlib.Path(sys.argv[1]).read_bytes()
+          pathlib.Path(sys.argv[2]).write_bytes(gzip.decompress(base64.b64decode(src)))
+          PY
+
+          cd "$PROJECT_ROOT"
+          patch --dry-run -p1 < "$RUNNER_TEMP/speed-2.3.6.patch"
+          patch -p1 < "$RUNNER_TEMP/speed-2.3.6.patch"
+          rm -rf "$PROJECT_ROOT/build" "$PROJECT_ROOT/dist"
+
+          grep -q 'MARKETING_VERSION = 2.3.6' "$PROJECT_ROOT/pip_swift/pip_swift.xcodeproj/project.pbxproj"
+          grep -q 'CURRENT_PROJECT_VERSION = 2026090911' "$PROJECT_ROOT/pip_swift/pip_swift.xcodeproj/project.pbxproj"
+          grep -q 'playerLayerPreviewSubmissionInterval' "$PROJECT_ROOT/pip_swift/pip_swift/ViewController.swift"
+          grep -q 'resolvedPlayerLayerBackingVideoURL' "$PROJECT_ROOT/pip_swift/pip_swift/ViewController.swift"
+          grep -q 'COMPAT_SRC' "$PROJECT_ROOT/pip_swift/pip_swift.xcodeproj/project.pbxproj"
+
+      - name: Generate bundled compatibility media
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            brew install ffmpeg
+          fi
+
+          media="$PROJECT_ROOT/pip_swift/pip_swift/CompatibilityMedia"
+          rm -rf "$media"
+          mkdir -p "$media"
+          export MEDIA_DIR="$media"
+
+          seq 1 220 | xargs -P 6 -I{} bash -lc '
+            set -euo pipefail
+            h={}
+            if (( h % 2 == 0 )); then
+              w=300
+              hh=$h
+            else
+              w=600
+              hh=$((h * 2))
+            fi
+            ffmpeg -hide_banner -loglevel error \
+              -f lavfi -i "color=c=black:s=${w}x${hh}:r=30:d=60" \
+              -c:v libx264 -profile:v baseline -level 3.0 \
+              -pix_fmt yuv420p -b:v 40k -g 60 \
+              -preset ultrafast -tune stillimage -movflags +faststart \
+              -an -y "$MEDIA_DIR/h$(printf "%03d" "$h").mov"
+          '
+
+          test "$(find "$media" -type f -name 'h*.mov' | wc -l | tr -d ' ')" -eq 220
+          test -f "$media/h001.mov"
+          test -f "$media/h022.mov"
+          test -f "$media/h120.mov"
+          test -f "$media/h220.mov"
+
+      - name: Select Xcode 26+
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/select_xcode_26.sh"
+
+      - name: Verify project
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/verify_project.sh"
+
+      - name: Build unsigned IPA
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/build_unsigned_ipa.sh"
+
+      - name: Package clean outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          ipa="$GITHUB_WORKSPACE/out/Speed-2.3.6-Compatibility-Response-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-2.3.6-Compatibility-Response-Source.tar.gz"
+
+          cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" "$ipa"
+          unzip -t "$ipa"
+          media_count="$(unzip -l "$ipa" | grep -E 'Payload/Speed.app/CompatibilityMedia/h[0-9]{3}\.mov$' | wc -l | tr -d ' ')"
+          test "$media_count" -eq 220
+          shasum -a 256 "$ipa" > "$ipa.sha256"
+
+          tar \
+            --exclude='./build' \
+            --exclude='./dist' \
+            -czf "$src" -C "$PROJECT_ROOT" .
+          shasum -a 256 "$src" > "$src.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-2.3.6-Compatibility-Response
+          path: |
+            out/Speed-2.3.6-Compatibility-Response-unsigned.ipa
+            out/Speed-2.3.6-Compatibility-Response-unsigned.ipa.sha256
+            out/Speed-2.3.6-Compatibility-Response-Source.tar.gz
+            out/Speed-2.3.6-Compatibility-Response-Source.tar.gz.sha256
+          if-no-files-found: error
+
+      - name: Publish rolling prerelease assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa="$GITHUB_WORKSPACE/out/Speed-2.3.6-Compatibility-Response-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-2.3.6-Compatibility-Response-Source.tar.gz"
+
+          gh release upload dev-latest "$ipa" "$src" --clobber
+          gh release edit dev-latest \
+            --target "$GITHUB_SHA" \
+            --title "Speed 2.3.6 Compatibility Response" \
+            --notes "Compatibility responsiveness fix. Bundles all 1-220pt PlayerLayer geometry media so style changes and slider updates no longer wait for runtime H.264 encoding. Compatibility slider now uses live 45Hz throttled aspect updates with exact release convergence. First PlayerLayer readiness probe is reduced to 30ms and redundant head seek is skipped. Standard 120Hz route is unchanged. Unsigned IPA: sign before installation." \
+            --prerelease
