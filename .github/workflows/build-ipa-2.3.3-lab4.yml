@@ -32,6 +32,7 @@ jobs:
             --dir "$GITHUB_WORKSPACE/baseline"
           tar -xzf "$GITHUB_WORKSPACE/baseline/$BASELINE_SOURCE" \
             -C "$GITHUB_WORKSPACE/source"
+          rm -rf "$GITHUB_WORKSPACE/source/build" "$GITHUB_WORKSPACE/source/dist"
           echo "PROJECT_ROOT=$GITHUB_WORKSPACE/source" >> "$GITHUB_ENV"
 
       - name: Apply Laboratory status synchronization fix
@@ -126,7 +127,7 @@ jobs:
           cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" "$ipa"
           unzip -t "$ipa"
           shasum -a 256 "$ipa" > "$ipa.sha256"
-          tar -czf "$src" -C "$PROJECT_ROOT" .
+          tar --exclude='./build' --exclude='./dist' -czf "$src" -C "$PROJECT_ROOT" .
           shasum -a 256 "$src" > "$src.sha256"
 
       - name: Upload artifact
