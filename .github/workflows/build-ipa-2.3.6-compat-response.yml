@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/build-ipa-2.3.6-compat-response.yml'
-      - 'patches/speed-2.3.6-compat-response.patch.gz.b64'
+      - 'patches/speed-2.3.6-compat-response.part*'
   workflow_dispatch:
 
 permissions:
@@ -13,7 +13,6 @@ permissions:
 
 env:
   BASELINE_SOURCE: Speed-2.3.5-Stability-2-Source.tar.gz
-  PATCH_FILE: patches/speed-2.3.6-compat-response.patch.gz.b64
 
 jobs:
   build:
@@ -42,10 +41,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - "$GITHUB_WORKSPACE/$PATCH_FILE" "$RUNNER_TEMP/speed-2.3.6.patch" <<'PY'
-          import base64, gzip, pathlib, sys
+          joined="$RUNNER_TEMP/speed-2.3.6.patch.gz.b64"
+          cat \
+            "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part01" \
+            "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part02" \
+            "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part03" \
+            "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part04" \
+            "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part05" \
+            "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part06" \
+            "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part07" \
+            > "$joined"
+
+          actual_b64_sha="$(shasum -a 256 "$joined" | awk '{print $1}')"
+          test "$actual_b64_sha" = "2902005056875a9e4a13baa6e3a37c3f560615812afafe31b8404d52060192cc"
+
+          python3 - "$joined" "$RUNNER_TEMP/speed-2.3.6.patch" <<'PY'
+          import base64, gzip, hashlib, pathlib, sys
           src = pathlib.Path(sys.argv[1]).read_bytes()
-          pathlib.Path(sys.argv[2]).write_bytes(gzip.decompress(base64.b64decode(src)))
+          patch = gzip.decompress(base64.b64decode(src, validate=True))
+          expected = "51e0b99c35a9e8596cfac5900e7b588a94e84b34c9d1f447a502f2b1f3768876"
+          assert hashlib.sha256(patch).hexdigest() == expected
+          pathlib.Path(sys.argv[2]).write_bytes(patch)
           PY
 
           cd "$PROJECT_ROOT"
