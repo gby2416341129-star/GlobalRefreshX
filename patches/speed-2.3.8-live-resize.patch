@@ -1,0 +1,220 @@
+diff --git a/pip_swift/pip_swift/ViewController.swift b/pip_swift/pip_swift/ViewController.swift
+index 227ff33..72a2fd2 100644
+--- a/pip_swift/pip_swift/ViewController.swift
++++ b/pip_swift/pip_swift/ViewController.swift
+@@ -289,6 +289,7 @@ class ViewController: UIViewController, AVPictureInPictureControllerDelegate {
+     private var playerPauseObserver: NSKeyValueObservation?
+     private var playerLayerTimeControlObserver: NSKeyValueObservation?
+     private var playerLayerMediaRequestGeneration: UInt = 0
++    private var lastAppliedPlayerLayerMediaRequestGeneration: UInt = 0
+     private var pendingPlayerLayerPreviewHeight: CGFloat?
+     private var lastPlayerLayerPreviewSubmissionAt: CFTimeInterval = 0
+     private let playerLayerPreviewSubmissionInterval: CFTimeInterval = 1.0 / 45.0
+@@ -3794,6 +3795,11 @@ class ViewController: UIViewController, AVPictureInPictureControllerDelegate {
+ 
+     private func presentPiPHeightEditor() {
+         DiagnosticsRuntimeState.recordUserAction("打开自定义悬浮窗高度")
++        if shouldUsePlayerLayerPiPCompatibility {
++            // Prime the tiny compact-media bank before the first drag event. The work is
++            // fully off-main; interactive requests use a separate queue and can overtake it.
++            PlaceholderVideoFactory.prewarmPlayerLayerBackingVideo()
++        }
+         let editor = PiPHeightEditorViewController(
+             height: clampedPiPHeight,
+             range: currentMinimumPiPHeight...currentGeometryMetrics.maximumHeight,
+@@ -3911,15 +3917,24 @@ class ViewController: UIViewController, AVPictureInPictureControllerDelegate {
+         guard let playerLayer, let player = playerLayer.player else { return }
+ 
+         let requestedHeight = clampedHeight(height)
++        // Every slider event advances the generation, even when the requested media is
++        // already current. That invalidates an older in-flight completion and prevents a
++        // late preview from snapping the PiP back after the user reverses direction.
++        playerLayerMediaRequestGeneration &+= 1
++        let generation = playerLayerMediaRequestGeneration
++
+         // Avoid rebuilding the same AVPlayerItem when repeated slider callbacks snap to
+-        // the same integer-point height.
++        // the same integer-point height. A committed height also closes the temporary
++        // slider burst cache so the normal 8-file LRU policy resumes immediately.
+         if let targetURL = PlaceholderVideoFactory.resolvedPlayerLayerBackingVideoURL(forPointHeight: requestedHeight),
+            let currentURL = (player.currentItem?.asset as? AVURLAsset)?.url,
+            currentURL == targetURL {
++            lastAppliedPlayerLayerMediaRequestGeneration = generation
++            if !isPreviewingPiPHeight, !targetURL.path.contains("/CompatibilityMedia/") {
++                GeneratedPiPVideoCache.trim(excluding: [targetURL])
++            }
+             return
+         }
+-        playerLayerMediaRequestGeneration &+= 1
+-        let generation = playerLayerMediaRequestGeneration
+ 
+         PlaceholderVideoFactory.preparePlayerLayerBackingVideo(
+             forPointHeight: requestedHeight,
+@@ -3927,10 +3942,21 @@ class ViewController: UIViewController, AVPictureInPictureControllerDelegate {
+         ) { [weak self, weak player] url in
+             let apply = { [weak self, weak player] in
+                 guard let self, let player else { return }
+-                guard generation == self.playerLayerMediaRequestGeneration else { return }
+                 guard self.shouldUsePlayerLayerPiPCompatibility else { return }
+-                guard abs(self.clampedPiPHeight - requestedHeight) < 0.01 else { return }
+ 
++                let isLatestRequest = generation == self.playerLayerMediaRequestGeneration
++                if !isLatestRequest {
++                    // During a continuous drag, do not freeze the PiP until the finger stops.
++                    // Accept completed preview requests in monotonically newer order so the
++                    // system window visibly chases the slider with only pipeline latency.
++                    guard self.isPreviewingPiPHeight,
++                          generation > self.lastAppliedPlayerLayerMediaRequestGeneration else { return }
++                } else if !self.isPreviewingPiPHeight {
++                    // A final commit must still converge to the exact selected point height.
++                    guard abs(self.clampedPiPHeight - requestedHeight) < 0.01 else { return }
++                }
++
++                self.lastAppliedPlayerLayerMediaRequestGeneration = generation
+                 let item = AVPlayerItem(asset: AVURLAsset(url: url))
+                 self.observeLooping(for: item)
+                 self.configureBackingPlayerForPiP(player)
+@@ -3941,7 +3967,11 @@ class ViewController: UIViewController, AVPictureInPictureControllerDelegate {
+                 } else {
+                     player.pause()
+                 }
+-                if !url.path.contains("/CompatibilityMedia/") {
++
++                // While the editor is being dragged, keep the tiny materialized media bank
++                // available so nearby point heights remain instant. Commit/end restores the
++                // existing 8-file LRU cache and bounds persistent disk usage.
++                if !url.path.contains("/CompatibilityMedia/"), !self.isPreviewingPiPHeight {
+                     GeneratedPiPVideoCache.trim(excluding: [url])
+                 }
+                 AppDebugLogger.log("PlayerLayer geometry media applied (\(reason)): \(self.formattedHeight(requestedHeight))")
+@@ -4899,6 +4929,11 @@ enum PlaceholderVideoFactory {
+         label: "speed.playerlayer.media-prewarm",
+         qos: .utility
+     )
++    private static let interactiveGenerationQueue = DispatchQueue(
++        label: "speed.playerlayer.media-interactive",
++        qos: .userInitiated,
++        attributes: .concurrent
++    )
+     private static let generationStateLock = NSLock()
+     private static var latestInteractiveGeneration: UInt = 0
+     private static var prewarmGeneration: UInt = 0
+@@ -5036,29 +5071,29 @@ enum PlaceholderVideoFactory {
+     }
+ 
+     static func prewarmPlayerLayerBackingVideo() {
+-        if bundledPlayerLayerBackingVideoURL(forPointHeight: 22) != nil,
+-           bundledPlayerLayerBackingVideoURL(forPointHeight: 1) != nil {
+-            return
+-        }
+-
+         let generation = beginPrewarmGeneration()
+-        prewarmPlayerLayerBackingVideo(forPointHeight: 22, prewarmGeneration: generation)
+ 
+-        // 1pt is only needed for Compatibility one-tap hide. Delay this nonessential
+-        // encode so first paint, page switching and the normal 22pt PiP start win CPU time.
+-        generationQueue.asyncAfter(deadline: .now() + optionalMinimumPrewarmDelay) {
+-            guard isPrewarmGenerationCurrent(generation) else { return }
+-            do {
+-                try makePlayerLayerBackingVideoIfNeeded(
+-                    forPointHeight: 1,
+-                    shouldContinue: { isPrewarmGenerationCurrent(generation) }
+-                )
+-            } catch GenerationError.cancelled {
+-                // Route changed or a newer prewarm superseded this optional work.
+-            } catch {
++        // 2.3.8 live-resize path: the compact .spm bank is only ~0.35 MB compressed and
++        // expands to ~8 MB total. Materialize it once on a utility queue so normal slider
++        // movement becomes local AVPlayerItem switching instead of decode-on-every-step.
++        // Do not invoke the H.264 fallback while bulk warming; missing compact assets are
++        // still handled lazily by the proven cancellable fallback in interactive requests.
++        generationQueue.async {
++            for height in 1...220 {
++                guard isPrewarmGenerationCurrent(generation) else { return }
++                guard resolvedPlayerLayerBackingVideoURL(forPointHeight: CGFloat(height)) == nil else { continue }
++                do {
++                    _ = try materializeCompressedBundledPlayerLayerBackingVideoIfAvailable(
++                        forPointHeight: CGFloat(height),
++                        shouldContinue: { isPrewarmGenerationCurrent(generation) }
++                    )
++                } catch GenerationError.cancelled {
++                    return
++                } catch {
+ #if DEBUG
+-                AppDebugLogger.log("PlayerLayer minimum media prewarm failed: \(error.localizedDescription)")
++                    AppDebugLogger.log("Compact slider media prewarm failed at \(height)pt: \(error.localizedDescription)")
+ #endif
++                }
+             }
+         }
+     }
+@@ -5141,12 +5176,31 @@ enum PlaceholderVideoFactory {
+     ) {
+         setLatestInteractiveGeneration(requestGeneration)
+         if let readyURL = resolvedPlayerLayerBackingVideoURL(forPointHeight: height) {
+-            guard isInteractiveGenerationCurrent(requestGeneration) else { return }
+             completion(readyURL)
+             return
+         }
++
+         let url = playerLayerBackingVideoURL(forPointHeight: height)
+-        generationQueue.async {
++        interactiveGenerationQueue.async {
++            // Compact resources are deliberately tiny. Finish their decode even if a newer
++            // slider event arrives mid-flight; cancelling every 16-22 ms event starved the
++            // old serial queue and made Compatibility appear to resize only after release.
++            do {
++                if let compactURL = try materializeCompressedBundledPlayerLayerBackingVideoIfAvailable(
++                    forPointHeight: height,
++                    shouldContinue: { true }
++                ) {
++                    completion(compactURL)
++                    return
++                }
++            } catch {
++#if DEBUG
++                AppDebugLogger.log("Compact interactive media decode failed: \(error.localizedDescription)")
++#endif
++            }
++
++            // Runtime H.264 remains a last-resort fallback and stays cancellable because it
++            // is orders of magnitude more expensive than compact-media materialization.
+             guard isInteractiveGenerationCurrent(requestGeneration) else { return }
+             do {
+                 try makePlayerLayerBackingVideoIfNeeded(
+@@ -5156,8 +5210,7 @@ enum PlaceholderVideoFactory {
+                 guard isInteractiveGenerationCurrent(requestGeneration) else { return }
+                 completion(url)
+             } catch GenerationError.cancelled {
+-                // A newer slider/commit request superseded this encode. The temporary
+-                // file is deleted by makeVideoAtomically and never reaches AVPlayer.
++                // A newer request superseded only the expensive fallback generation.
+             } catch {
+ #if DEBUG
+                 AppDebugLogger.log("PlayerLayer geometry media generation failed: \(error.localizedDescription)")
+diff --git a/pip_swift/pip_swift.xcodeproj/project.pbxproj b/pip_swift/pip_swift.xcodeproj/project.pbxproj
+index 1ac9916..50e6d69 100644
+--- a/pip_swift/pip_swift.xcodeproj/project.pbxproj
++++ b/pip_swift/pip_swift.xcodeproj/project.pbxproj
+@@ -506,8 +506,8 @@
+ 				ENABLE_DEBUG_DYLIB = NO;
+ 				INFOPLIST_FILE = pip_swift/Info.plist;
+ 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+-				CURRENT_PROJECT_VERSION = 2026090912;
+-				MARKETING_VERSION = 2.3.7;
++				CURRENT_PROJECT_VERSION = 2026090913;
++				MARKETING_VERSION = 2.3.8;
+ 				LD_RUNPATH_SEARCH_PATHS = (
+ 					"$(inherited)",
+ 					"@executable_path/Frameworks",
+@@ -530,8 +530,8 @@
+ 				DEVELOPMENT_TEAM = "";
+ 				INFOPLIST_FILE = pip_swift/Info.plist;
+ 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+-				CURRENT_PROJECT_VERSION = 2026090912;
+-				MARKETING_VERSION = 2.3.7;
++				CURRENT_PROJECT_VERSION = 2026090913;
++				MARKETING_VERSION = 2.3.8;
+ 				LD_RUNPATH_SEARCH_PATHS = (
+ 					"$(inherited)",
+ 					"@executable_path/Frameworks",
