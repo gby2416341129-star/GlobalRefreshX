@@ -46,75 +46,41 @@ jobs:
 
           pip_views = root / "pip_swift/pip_swift/PiPViews.swift"
           s = pip_views.read_text()
-          old = '''                        Text(latencyExperimentState.updateLinkActive
-                               ? L10n.text("运行中", "Active")
-                               : L10n.text("未启用", "Off"))
-                              .font(.caption.weight(.semibold))
-                              .foregroundStyle(latencyExperimentState.updateLinkActive ? Color.green : Color.secondary)'''
-          new = '''                        Text((latencyExperimentState.anyPreferenceEnabled && latencyExperimentState.updateLinkActive)
-                               ? L10n.text("运行中", "Active")
-                               : L10n.text("未启用", "Off"))
-                              .font(.caption.weight(.semibold))
-                              .foregroundStyle((latencyExperimentState.anyPreferenceEnabled && latencyExperimentState.updateLinkActive)
-                                               ? Color.green
-                                               : Color.secondary)'''
-          if old not in s:
-              raise RuntimeError("PiPViews Laboratory status block not found")
-          pip_views.write_text(s.replace(old, new))
+          if "Text(latencyExperimentState.updateLinkActive" not in s:
+              raise RuntimeError("PiPViews Laboratory status expression not found")
+          s = s.replace(
+              "Text(latencyExperimentState.updateLinkActive",
+              "Text((latencyExperimentState.anyPreferenceEnabled && latencyExperimentState.updateLinkActive)"
+          )
+          if ".foregroundStyle(latencyExperimentState.updateLinkActive ? Color.green : Color.secondary)" not in s:
+              raise RuntimeError("PiPViews Laboratory status color expression not found")
+          s = s.replace(
+              ".foregroundStyle(latencyExperimentState.updateLinkActive ? Color.green : Color.secondary)",
+              ".foregroundStyle((latencyExperimentState.anyPreferenceEnabled && latencyExperimentState.updateLinkActive) ? Color.green : Color.secondary)"
+          )
+          pip_views.write_text(s)
 
           vc = root / "pip_swift/pip_swift/ViewController.swift"
           s = vc.read_text()
-          old = '''    private func setLatencyExperimentAll(_ enabled: Bool) {
-              LatencyExperimentController.shared.setAllEnabled(enabled)
-              updateHomeView(animated: true)
-          }
-
-          private func setLowLatencyEventDispatch(_ enabled: Bool) {
-              LatencyExperimentController.shared.setLowLatencyEventDispatchEnabled(enabled)
-              updateHomeView(animated: true)
-          }
-
-          private func setImmediatePresentation(_ enabled: Bool) {
-              LatencyExperimentController.shared.setImmediatePresentationEnabled(enabled)
-              updateHomeView(animated: true)
-          }
-
-          private func setContinuousUpdates(_ enabled: Bool) {
-              LatencyExperimentController.shared.setContinuousUpdatesEnabled(enabled)
-              updateHomeView(animated: true)
-          }'''
-          new = '''    private func refreshLatencyExperimentUIAfterMutation() {
-              // UIUpdateLink rebuilds are intentionally deferred to the next main-queue turn.
-              // Refresh once immediately for switch responsiveness, then once after the
-              // controller's queued rebuild so the status badge never shows the prior state.
-              updateHomeView(animated: true)
-              DispatchQueue.main.async { [weak self] in
-                  self?.updateHomeView(animated: false)
-              }
-          }
-
-          private func setLatencyExperimentAll(_ enabled: Bool) {
-              LatencyExperimentController.shared.setAllEnabled(enabled)
-              refreshLatencyExperimentUIAfterMutation()
-          }
-
-          private func setLowLatencyEventDispatch(_ enabled: Bool) {
-              LatencyExperimentController.shared.setLowLatencyEventDispatchEnabled(enabled)
-              refreshLatencyExperimentUIAfterMutation()
-          }
-
-          private func setImmediatePresentation(_ enabled: Bool) {
-              LatencyExperimentController.shared.setImmediatePresentationEnabled(enabled)
-              refreshLatencyExperimentUIAfterMutation()
-          }
-
-          private func setContinuousUpdates(_ enabled: Bool) {
-              LatencyExperimentController.shared.setContinuousUpdatesEnabled(enabled)
-              refreshLatencyExperimentUIAfterMutation()
-          }'''
-          if old not in s:
-              raise RuntimeError("ViewController Laboratory mutation block not found")
-          vc.write_text(s.replace(old, new))
+          start = s.index("    private func setLatencyExperimentAll(_ enabled: Bool) {")
+          end = s.index("    private func loadHomePreferences()", start)
+          block = s[start:end]
+          expected = block.count("updateHomeView(animated: true)")
+          if expected != 4:
+              raise RuntimeError(f"Expected 4 Laboratory UI refresh calls, found {expected}")
+          block = block.replace("updateHomeView(animated: true)", "refreshLatencyExperimentUIAfterMutation()")
+          helper = "\n".join([
+              "    private func refreshLatencyExperimentUIAfterMutation() {",
+              "        // UIUpdateLink rebuilds are intentionally deferred to the next main-queue turn.",
+              "        // Refresh now, then again after the queued rebuild so the badge cannot lag by one tap.",
+              "        updateHomeView(animated: true)",
+              "        DispatchQueue.main.async { [weak self] in",
+              "            self?.updateHomeView(animated: false)",
+              "        }",
+              "    }",
+              "",
+          ])
+          vc.write_text(s[:start] + helper + block + s[end:])
 
           project = root / "pip_swift/pip_swift.xcodeproj/project.pbxproj"
           p = project.read_text()
