@@ -1,10 +1,149 @@
-name: Speed Build Maintenance
+name: Build Speed 2.3.4 Stability 1 IPA
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
+concurrency:
+  group: speed-main-build
+  cancel-in-progress: true
+
+env:
+  BASELINE_SOURCE: Speed-2.3.3-Laboratory-4-Source.tar.gz
+
 jobs:
-  maintenance:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: macos-26
+    timeout-minutes: 40
+
     steps:
-      - run: echo "Speed build workflow is being replaced by the current stability build."
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download clean Speed 2.3.3 baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE/source"
+          gh release download dev-latest \
+            --pattern "$BASELINE_SOURCE" \
+            --dir "$GITHUB_WORKSPACE/baseline"
+          tar -xzf "$GITHUB_WORKSPACE/baseline/$BASELINE_SOURCE" \
+            -C "$GITHUB_WORKSPACE/source"
+          rm -rf "$GITHUB_WORKSPACE/source/build" "$GITHUB_WORKSPACE/source/dist"
+          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/source" >> "$GITHUB_ENV"
+
+      - name: Reconstruct and apply Stability 1 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload="$RUNNER_TEMP/speed-2.3.4-stability-1.patch.gz.b64"
+          patch_file="$RUNNER_TEMP/speed-2.3.4-stability-1.patch"
+
+          cat \
+            "$GITHUB_WORKSPACE/payload/speed-2.3.4-stability-1.b64.part-00" \
+            "$GITHUB_WORKSPACE/payload/speed-2.3.4-stability-1.b64.part-01" \
+            > "$payload"
+
+          test "$(wc -c < "$payload" | tr -d ' ')" -eq 10776
+          echo "cb3b3cd2f0cc18d3ac4c12c0e54d5f5055e0af76864b0ee4841d556c08ae1593  $payload" | shasum -a 256 -c -
+
+          python3 - "$payload" "$patch_file" <<'PYCODE'
+          import base64, gzip, pathlib, sys
+          payload = pathlib.Path(sys.argv[1]).read_text().strip()
+          pathlib.Path(sys.argv[2]).write_bytes(gzip.decompress(base64.b64decode(payload, validate=True)))
+          PYCODE
+
+          echo "357bc23e9c41f8e5dae97bc07ae809d0782dcef1b16384efb08d083c2784c00c  $patch_file" | shasum -a 256 -c -
+          patch -d "$PROJECT_ROOT" -p1 < "$patch_file"
+
+          chmod +x "$PROJECT_ROOT/scripts/"*.sh
+          grep -q 'MARKETING_VERSION = 2.3.4' "$PROJECT_ROOT/pip_swift/pip_swift.xcodeproj/project.pbxproj"
+          grep -q 'CURRENT_PROJECT_VERSION = 2026090909' "$PROJECT_ROOT/pip_swift/pip_swift.xcodeproj/project.pbxproj"
+
+      - name: Select Xcode 26+
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/select_xcode_26.sh"
+
+      - name: Verify Stability 1 source
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/verify_project.sh"
+
+      - name: Build unsigned IPA
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/build_unsigned_ipa.sh"
+
+      - name: Upload Xcode diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-2.3.4-Stability-1-Xcode-Diagnostics
+          path: |
+            ${{ env.PROJECT_ROOT }}/build/diagnostics/xcodebuild.log
+            ${{ env.PROJECT_ROOT }}/build/diagnostics/Speed.xcresult
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Package clean release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+
+          ipa="$GITHUB_WORKSPACE/out/Speed-2.3.4-Stability-1-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-2.3.4-Stability-1-Source.tar.gz"
+          clean_source="$RUNNER_TEMP/Speed-2.3.4-Stability-1-Source"
+
+          cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" "$ipa"
+          unzip -t "$ipa"
+          shasum -a 256 "$ipa" > "$ipa.sha256"
+
+          rm -rf "$clean_source"
+          mkdir -p "$clean_source"
+          rsync -a \
+            --exclude 'build/' \
+            --exclude 'dist/' \
+            "$PROJECT_ROOT/" "$clean_source/"
+          tar -czf "$src" -C "$clean_source" .
+          shasum -a 256 "$src" > "$src.sha256"
+
+      - name: Upload unsigned IPA and source
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-2.3.4-Stability-1
+          path: |
+            out/Speed-2.3.4-Stability-1-unsigned.ipa
+            out/Speed-2.3.4-Stability-1-unsigned.ipa.sha256
+            out/Speed-2.3.4-Stability-1-Source.tar.gz
+            out/Speed-2.3.4-Stability-1-Source.tar.gz.sha256
+          if-no-files-found: error
+
+      - name: Publish rolling prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa="$GITHUB_WORKSPACE/out/Speed-2.3.4-Stability-1-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-2.3.4-Stability-1-Source.tar.gz"
+
+          if gh release view dev-latest >/dev/null 2>&1; then
+            gh release upload dev-latest "$ipa" "$src" --clobber
+            gh release edit dev-latest \
+              --target "$GITHUB_SHA" \
+              --title "Speed 2.3.4 Stability 1" \
+              --notes "Stability/performance cleanup only. Existing Speed UI and the stable Standard 120Hz CADisplayLink route are unchanged. Compatibility media generation is moved off the main-thread startup path, superseded encodes are cancelled, PlayerLayer recovery observers are correctly rebound, PiP height animation avoids per-frame root layout, route-switch watchdog handling is hardened, media writer waits are bounded, generated-video cache maintenance is moved off the main thread, private controlsStyle use is capability-guarded, and Laboratory links detach on scene disconnect. Unsigned IPA: sign before installation." \
+              --prerelease
+          else
+            gh release create dev-latest "$ipa" "$src" \
+              --target "$GITHUB_SHA" \
+              --title "Speed 2.3.4 Stability 1" \
+              --notes "Stability/performance cleanup only. Existing Speed UI and the stable Standard 120Hz CADisplayLink route are unchanged. Compatibility media generation is moved off the main-thread startup path, superseded encodes are cancelled, PlayerLayer recovery observers are correctly rebound, PiP height animation avoids per-frame root layout, route-switch watchdog handling is hardened, media writer waits are bounded, generated-video cache maintenance is moved off the main thread, private controlsStyle use is capability-guarded, and Laboratory links detach on scene disconnect. Unsigned IPA: sign before installation." \
+              --prerelease
+          fi
