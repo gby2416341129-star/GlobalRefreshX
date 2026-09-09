@@ -58,7 +58,7 @@ jobs:
           pathlib.Path(sys.argv[2]).write_bytes(gzip.decompress(base64.b64decode(payload, validate=True)))
           PYCODE
 
-          echo "7977081d42c66660af56173290e7e2f3bc1462174da2201f4bc76840891b53ee  $hotfix_patch" | shasum -a 256 -c -
+          echo "648e436670acf5e88599e733148c79648fe0aa8afa995e003f8b31bab287036a  $hotfix_patch" | shasum -a 256 -c -
 
           rm -rf "$GITHUB_WORKSPACE/source"
           mkdir -p "$GITHUB_WORKSPACE/source"
