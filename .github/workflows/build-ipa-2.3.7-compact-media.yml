@@ -1,0 +1,187 @@
+name: Build Speed 2.3.7 Compact Media IPA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-ipa-2.3.7-compact-media.yml'
+      - 'patches/speed-2.3.7-compact-media.part*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  BASELINE_SOURCE: Speed-2.3.6-Compatibility-Response-Source.tar.gz
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download Speed 2.3.6 source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE/source"
+          gh release download dev-latest \
+            --pattern "$BASELINE_SOURCE" \
+            --dir "$GITHUB_WORKSPACE/baseline"
+          tar -xzf "$GITHUB_WORKSPACE/baseline/$BASELINE_SOURCE" \
+            -C "$GITHUB_WORKSPACE/source"
+          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/source" >> "$GITHUB_ENV"
+
+      - name: Apply Speed 2.3.7 compact-media patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          joined="$RUNNER_TEMP/speed-2.3.7.patch.gz.b64"
+          cat "$GITHUB_WORKSPACE/patches/speed-2.3.7-compact-media.part01" > "$joined"
+
+          actual_b64_sha="$(shasum -a 256 "$joined" | awk '{print $1}')"
+          test "$actual_b64_sha" = "df9655f8fb4b27e2ddaec406bef4f9f9c2175a54a580c9f30737cfb4b99a1aee"
+
+          python3 - "$joined" "$RUNNER_TEMP/speed-2.3.7.patch" <<'PY'
+          import base64, gzip, hashlib, pathlib, sys
+          src = pathlib.Path(sys.argv[1]).read_bytes()
+          patch = gzip.decompress(base64.b64decode(src, validate=True))
+          expected = "2bb98e95f49c42045f26af5dd64b363ee9a87853f925abc771440e0b88a23d92"
+          assert hashlib.sha256(patch).hexdigest() == expected
+          pathlib.Path(sys.argv[2]).write_bytes(patch)
+          PY
+
+          cd "$PROJECT_ROOT"
+          patch --dry-run -p1 < "$RUNNER_TEMP/speed-2.3.7.patch"
+          patch -p1 < "$RUNNER_TEMP/speed-2.3.7.patch"
+          rm -rf "$PROJECT_ROOT/build" "$PROJECT_ROOT/dist"
+
+          grep -q 'MARKETING_VERSION = 2.3.7' "$PROJECT_ROOT/pip_swift/pip_swift.xcodeproj/project.pbxproj"
+          grep -q 'CURRENT_PROJECT_VERSION = 2026090912' "$PROJECT_ROOT/pip_swift/pip_swift.xcodeproj/project.pbxproj"
+          grep -q 'import Compression' "$PROJECT_ROOT/pip_swift/pip_swift/ViewController.swift"
+          grep -q 'compression_decode_buffer' "$PROJECT_ROOT/pip_swift/pip_swift/ViewController.swift"
+
+      - name: Compact compatibility media
+        shell: bash
+        run: |
+          set -euo pipefail
+          media="$PROJECT_ROOT/pip_swift/pip_swift/CompatibilityMedia"
+          test "$(find "$media" -type f -name 'h*.mov' | wc -l | tr -d ' ')" -eq 220
+
+          python3 - "$media" <<'PY'
+          from pathlib import Path
+          import shutil, struct, sys, tempfile, zlib
+
+          media = Path(sys.argv[1])
+          source = Path(tempfile.mkdtemp(prefix="speed-compat-source-"))
+          try:
+              for file in media.glob("h*.mov"):
+                  shutil.copy2(file, source / file.name)
+              shutil.rmtree(media)
+              media.mkdir(parents=True)
+
+              hot = {1, 22, 120}
+              for height in range(1, 221):
+                  name = f"h{height:03d}.mov"
+                  raw = (source / name).read_bytes()
+                  if height in hot:
+                      (media / name).write_bytes(raw)
+                  else:
+                      packed = struct.pack("<I", len(raw)) + zlib.compress(raw, 9)
+                      (media / f"h{height:03d}.spm").write_bytes(packed)
+          finally:
+              shutil.rmtree(source, ignore_errors=True)
+          PY
+
+          raw_count="$(find "$media" -type f -name 'h*.mov' | wc -l | tr -d ' ')"
+          compact_count="$(find "$media" -type f -name 'h*.spm' | wc -l | tr -d ' ')"
+          test "$raw_count" -eq 3
+          test "$compact_count" -eq 217
+          test -f "$media/h001.mov"
+          test -f "$media/h022.mov"
+          test -f "$media/h120.mov"
+          test -f "$media/h220.spm"
+
+          media_bytes="$(du -sk "$media" | awk '{print $1 * 1024}')"
+          echo "Compact CompatibilityMedia bytes: $media_bytes"
+          test "$media_bytes" -lt 650000
+
+          python3 - "$media" <<'PY'
+          from pathlib import Path
+          import struct, sys, zlib
+          media = Path(sys.argv[1])
+          for height in (2, 21, 80, 119, 121, 220):
+              packed = (media / f"h{height:03d}.spm").read_bytes()
+              expected = struct.unpack("<I", packed[:4])[0]
+              decoded = zlib.decompress(packed[4:])
+              assert len(decoded) == expected
+              assert decoded[4:8] == b"ftyp", height
+          print("Compact media sample decode verification passed")
+          PY
+
+      - name: Select Xcode 26+
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/select_xcode_26.sh"
+
+      - name: Verify project
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/verify_project.sh"
+
+      - name: Build unsigned IPA
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/build_unsigned_ipa.sh"
+
+      - name: Package clean outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          ipa="$GITHUB_WORKSPACE/out/Speed-2.3.7-Compact-Media-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-2.3.7-Compact-Media-Source.tar.gz"
+
+          cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" "$ipa"
+          unzip -t "$ipa"
+          raw_count="$(unzip -l "$ipa" | grep -E 'Payload/Speed.app/CompatibilityMedia/h[0-9]{3}\.mov$' | wc -l | tr -d ' ')"
+          compact_count="$(unzip -l "$ipa" | grep -E 'Payload/Speed.app/CompatibilityMedia/h[0-9]{3}\.spm$' | wc -l | tr -d ' ')"
+          test "$raw_count" -eq 3
+          test "$compact_count" -eq 217
+          echo "Final IPA bytes: $(stat -f%z "$ipa")"
+          shasum -a 256 "$ipa" > "$ipa.sha256"
+
+          tar \
+            --exclude='./build' \
+            --exclude='./dist' \
+            -czf "$src" -C "$PROJECT_ROOT" .
+          shasum -a 256 "$src" > "$src.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-2.3.7-Compact-Media
+          path: |
+            out/Speed-2.3.7-Compact-Media-unsigned.ipa
+            out/Speed-2.3.7-Compact-Media-unsigned.ipa.sha256
+            out/Speed-2.3.7-Compact-Media-Source.tar.gz
+            out/Speed-2.3.7-Compact-Media-Source.tar.gz.sha256
+          if-no-files-found: error
+
+      - name: Publish rolling prerelease assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa="$GITHUB_WORKSPACE/out/Speed-2.3.7-Compact-Media-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-2.3.7-Compact-Media-Source.tar.gz"
+
+          gh release upload dev-latest "$ipa" "$src" --clobber
+          gh release edit dev-latest \
+            --target "$GITHUB_SHA" \
+            --title "Speed 2.3.7 Compact Media" \
+            --notes "Keeps Speed 2.3.6 compatibility responsiveness while shrinking bundled media. 1pt, 22pt and 120pt hot paths remain raw MOV assets; the other 217 exact integer-height assets ship as tiny zlib .spm resources and materialize off-main into the existing 8-file LRU cache on demand. Runtime H.264 generation remains only as a cancellable fallback. Standard 120Hz route and UI are unchanged. Unsigned IPA: sign before installation." \
+            --prerelease
