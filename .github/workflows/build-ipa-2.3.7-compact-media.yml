@@ -107,8 +107,8 @@ jobs:
           test -f "$media/h120.mov"
           test -f "$media/h220.spm"
 
-          media_bytes="$(du -sk "$media" | awk '{print $1 * 1024}')"
-          echo "Compact CompatibilityMedia bytes: $media_bytes"
+          media_bytes="$(find "$media" -type f -exec stat -f%z {} \; | awk '{sum += $1} END {print sum + 0}')"
+          echo "Compact CompatibilityMedia exact bytes: $media_bytes"
           test "$media_bytes" -lt 650000
 
           python3 - "$media" <<'PY'
