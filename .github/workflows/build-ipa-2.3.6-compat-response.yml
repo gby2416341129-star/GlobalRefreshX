@@ -47,7 +47,13 @@ jobs:
             "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part02" \
             "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part03" \
             "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part04" \
-            "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part05" \
+            "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part05a" \
+            "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part05b" \
+            "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part05c" \
+            "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part05d" \
+            "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part05e" \
+            "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part05f" \
+            "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part05g" \
             "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part06" \
             "$GITHUB_WORKSPACE/patches/speed-2.3.6-compat-response.part07" \
             > "$joined"
