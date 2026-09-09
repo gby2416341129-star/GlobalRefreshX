@@ -66,7 +66,8 @@ jobs:
           depth = 0
           end = None
           for i, ch in enumerate(s[brace:], start=brace):
-              if ch == "{": depth += 1
+              if ch == "{":
+                  depth += 1
               elif ch == "}":
                   depth -= 1
                   if depth == 0:
@@ -89,7 +90,9 @@ jobs:
 
               func attach(to view: UIView) {
                   anchorView = view
-                  if state.anyPreferenceEnabled { scheduleRebuild() }
+                  if state.anyPreferenceEnabled {
+                      scheduleRebuild()
+                  }
               }
 
               func setLowLatencyEventDispatchEnabled(_ enabled: Bool) {
@@ -125,7 +128,9 @@ jobs:
                   let preferenceNeeded = state.lowLatencyEventDispatchEnabled || state.immediatePresentationEnabled
                   let preferenceOK = !preferenceNeeded || preferenceLink?.isEnabled == true
                   let continuousOK = !state.continuousUpdatesEnabled || continuousLink?.isEnabled == true
-                  if !preferenceOK || !continuousOK { scheduleRebuild() }
+                  if !preferenceOK || !continuousOK {
+                      scheduleRebuild()
+                  }
               }
 
               func stopForTeardown() {
@@ -146,15 +151,23 @@ jobs:
 
               private func rebuildLinks() {
                   stopLinks(resetPreferences: false)
-                  guard state.anyPreferenceEnabled, let anchorView, let windowScene = anchorView.window?.windowScene else {
+
+                  guard state.anyPreferenceEnabled,
+                        let anchorView,
+                        let windowScene = anchorView.window?.windowScene
+                  else {
                       state.updateLinkActive = false
                       return
                   }
 
                   if state.lowLatencyEventDispatchEnabled || state.immediatePresentationEnabled {
                       let link = UIUpdateLink(windowScene: windowScene)
-                      if state.lowLatencyEventDispatchEnabled { link.wantsLowLatencyEventDispatch = true }
-                      if state.immediatePresentationEnabled { link.wantsImmediatePresentation = true }
+                      if state.lowLatencyEventDispatchEnabled {
+                          link.wantsLowLatencyEventDispatch = true
+                      }
+                      if state.immediatePresentationEnabled {
+                          link.wantsImmediatePresentation = true
+                      }
                       link.isEnabled = true
                       preferenceLink = link
                   }
@@ -182,9 +195,12 @@ jobs:
                   continuousLink?.isEnabled = false
                   continuousLink = nil
                   state.updateLinkActive = false
-                  if resetPreferences { state = LatencyExperimentState() }
+                  if resetPreferences {
+                      state = LatencyExperimentState()
+                  }
               }
           }'''
+
           s = s[:start] + replacement + s[end:]
           refresh.write_text(s)
 
@@ -193,6 +209,14 @@ jobs:
           p = p.replace("MARKETING_VERSION = 2.3.0;", "MARKETING_VERSION = 2.3.2;")
           p = p.replace("CURRENT_PROJECT_VERSION = 2026090905;", "CURRENT_PROJECT_VERSION = 2026090907;")
           project.write_text(p)
+
+          verify = root / "scripts/verify_project.sh"
+          v = verify.read_text()
+          v = v.replace("Speed version 2.3.0", "Speed version 2.3.2")
+          v = v.replace("MARKETING_VERSION = 2.3.0", "MARKETING_VERSION = 2.3.2")
+          v = v.replace("CURRENT_PROJECT_VERSION = 2026090905", "CURRENT_PROJECT_VERSION = 2026090907")
+          v = v.replace("UIUpdateLink(view: anchorView)", "UIUpdateLink(windowScene: windowScene)")
+          verify.write_text(v)
           PYHOTFIX
 
           project_root="$GITHUB_WORKSPACE/source"
@@ -219,6 +243,10 @@ jobs:
       - name: Select Xcode 26+
         shell: bash
         run: "$PROJECT_ROOT/scripts/select_xcode_26.sh"
+
+      - name: Verify Laboratory source
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/verify_project.sh"
 
       - name: Build unsigned IPA
         shell: bash
@@ -258,7 +286,15 @@ jobs:
           src="$GITHUB_WORKSPACE/out/Speed-2.3.2-Laboratory-3-Source.tar.gz"
           if gh release view dev-latest >/dev/null 2>&1; then
             gh release upload dev-latest "$ipa" "$src" --clobber
-            gh release edit dev-latest --target "$GITHUB_SHA" --title "Speed Laboratory Build" --notes "Speed 2.3.2 Laboratory 3. UI unchanged. Fixes continuous UI update crash by isolating continuous updates on a view-bound UIUpdateLink with an action handler and leaving 120 Hz preference to Speed's stable CADisplayLink path." --prerelease
+            gh release edit dev-latest \
+              --target "$GITHUB_SHA" \
+              --title "Speed Laboratory Build" \
+              --notes "Speed 2.3.2 Laboratory 3. UI unchanged. Continuous UI updates are isolated on a view-bound UIUpdateLink with an action handler; Speed's stable CADisplayLink retains the 120 Hz preference." \
+              --prerelease
           else
-            gh release create dev-latest "$ipa" "$src" --target "$GITHUB_SHA" --title "Speed Laboratory Build" --notes "Speed 2.3.2 Laboratory 3. UI unchanged. Fixes continuous UI update crash by isolating continuous updates on a view-bound UIUpdateLink with an action handler and leaving 120 Hz preference to Speed's stable CADisplayLink path." --prerelease
+            gh release create dev-latest "$ipa" "$src" \
+              --target "$GITHUB_SHA" \
+              --title "Speed Laboratory Build" \
+              --notes "Speed 2.3.2 Laboratory 3. UI unchanged. Continuous UI updates are isolated on a view-bound UIUpdateLink with an action handler; Speed's stable CADisplayLink retains the 120 Hz preference." \
+              --prerelease
           fi
