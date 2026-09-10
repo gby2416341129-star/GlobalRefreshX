@@ -5,7 +5,7 @@ on:
     branches: [speed-2.6-dev]
     paths:
       - '.github/workflows/build-ipa-2.6.4-side-stash-pip-conflict.yml'
-      - 'scripts/speed264.patch.gz.b64'
+      - 'scripts/speed264/**'
   workflow_dispatch:
 
 permissions:
@@ -13,7 +13,6 @@ permissions:
 
 env:
   BASELINE_SOURCE: Speed-2.6.3-Core-Logic-Cleanup-Source.tar.gz
-  PATCH_SHA256: 83ea2327cedd699456fb01c206ba41fef4a3d8860de685a4f129fc499bcd2d9f
 
 jobs:
   build:
@@ -36,15 +35,24 @@ jobs:
           tar -xzf "$GITHUB_WORKSPACE/baseline/$BASELINE_SOURCE" -C "$GITHUB_WORKSPACE/source"
           echo "PROJECT_ROOT=$GITHUB_WORKSPACE/source" >> "$GITHUB_ENV"
 
-      - name: Apply Speed 2.6.4 side-stash and PiP-conflict patch
+      - name: Apply Speed 2.6.4 side-stash and PiP-conflict patches
         shell: bash
         run: |
           set -euo pipefail
-          base64 -D < "$GITHUB_WORKSPACE/scripts/speed264.patch.gz.b64" | gunzip > "$RUNNER_TEMP/speed264.patch"
-          actual="$(shasum -a 256 "$RUNNER_TEMP/speed264.patch" | awk '{print $1}')"
-          test "$actual" = "$PATCH_SHA256"
           cd "$PROJECT_ROOT"
-          patch -p1 < "$RUNNER_TEMP/speed264.patch"
+          for patch_file in \
+            "$GITHUB_WORKSPACE/scripts/speed264/HomePresentationState.patch" \
+            "$GITHUB_WORKSPACE/scripts/speed264/KeepAliveLogger.patch" \
+            "$GITHUB_WORKSPACE/scripts/speed264/PiPViews.patch" \
+            "$GITHUB_WORKSPACE/scripts/speed264/ViewController-1.patch" \
+            "$GITHUB_WORKSPACE/scripts/speed264/ViewController-2.patch" \
+            "$GITHUB_WORKSPACE/scripts/speed264/ViewController-3.patch" \
+            "$GITHUB_WORKSPACE/scripts/speed264/project.pbxproj.patch" \
+            "$GITHUB_WORKSPACE/scripts/speed264/verify_project.patch"
+          do
+            echo "Applying $patch_file"
+            patch --batch -p4 < "$patch_file"
+          done
           rm -rf "$PROJECT_ROOT/build" "$PROJECT_ROOT/dist"
 
       - name: Select Xcode 26+
@@ -112,5 +120,5 @@ jobs:
           gh release edit dev-latest \
             --target "$GITHUB_SHA" \
             --title 'Speed 2.6.4 Side Stash + PiP Conflict' \
-            --notes 'Adds first-use native side-stash calibration for one-tap hide, remembers the last left/right stash position and vertical placement, and replays that saved placement on later one-tap hides without reverting to the 0.1/1pt pseudo-hide path. Adds persistent pause reasons and local notifications when another Picture in Picture session suspends, occupies, or replaces Speed PiP; the home screen clearly shows 120Hz paused for a detected PiP conflict and Speed paused for an unexpected stop, with recovery guidance. Preserves the 2.6.3 core cleanup, stable CADisplayLink path, and compact 3 MOV + 217 SPM compatibility media.' \
+            --notes 'Experimental side-stash build. Adds first-use native side-stash calibration for one-tap hide, remembers the last left/right stash position and vertical placement, and replays that saved placement on later one-tap hides instead of reverting to the 0.1/1pt pseudo-hide path. Adds persistent pause reasons and local notifications when another Picture in Picture session suspends, occupies, or replaces Speed PiP; the home screen clearly shows 120Hz paused for a detected PiP conflict and Speed paused for an unexpected stop, with recovery guidance. Preserves the 2.6.3 core cleanup, stable CADisplayLink path, and compact 3 MOV + 217 SPM compatibility media.' \
             --prerelease
