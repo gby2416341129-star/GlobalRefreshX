@@ -1,0 +1,288 @@
+name: Build Speed 2.5.0 Final IPA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-ipa-2.5.0-final.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  BASELINE_SOURCE: Speed-2.4.0-Performance-Core-Source.tar.gz
+  PATCH_SHA256: 054fe8e414463902a0e6a2c1d64eb93f04cf993a7ee67c8d2910c3e30b642afb
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download Speed 2.4.0 baseline source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE/source"
+          gh release download dev-latest --pattern "$BASELINE_SOURCE" --dir "$GITHUB_WORKSPACE/baseline"
+          tar -xzf "$GITHUB_WORKSPACE/baseline/$BASELINE_SOURCE" -C "$GITHUB_WORKSPACE/source"
+          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/source" >> "$GITHUB_ENV"
+
+      - name: Assemble, apply, and harden Speed 2.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          parts="$GITHUB_WORKSPACE/patches/speed-2.5.0-all-features.part"
+          cat "${parts}00" "${parts}01" "${parts}02" "${parts}03" "${parts}04" > "$RUNNER_TEMP/speed-2.5.0.patch.gz.b64"
+          python3 - <<'PY'
+          import base64, gzip, os, pathlib
+          src = pathlib.Path(os.environ['RUNNER_TEMP']) / 'speed-2.5.0.patch.gz.b64'
+          raw = base64.b64decode(src.read_bytes())
+          out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'speed-2.5.0.patch'
+          out.write_bytes(gzip.decompress(raw))
+          PY
+          patch_file="$RUNNER_TEMP/speed-2.5.0.patch"
+          test "$(shasum -a 256 "$patch_file" | awk '{print $1}')" = "$PATCH_SHA256"
+          cd "$PROJECT_ROOT"
+          patch --dry-run -p1 < "$patch_file"
+          patch -p1 < "$patch_file"
+
+          cat > "$PROJECT_ROOT/pip_swift/pip_swift/SpeedAppIntents.swift" <<'SWIFT'
+          import AppIntents
+          import Foundation
+
+          enum SpeedLaunchTarget: String, AppEnum {
+              case open
+              case start
+              case startAndHide
+
+              static var typeDisplayRepresentation = TypeDisplayRepresentation("Speed action")
+              static var caseDisplayRepresentations: [SpeedLaunchTarget: DisplayRepresentation] = [
+                  .open: DisplayRepresentation("Open Speed"),
+                  .start: DisplayRepresentation("Start Speed"),
+                  .startAndHide: DisplayRepresentation("Start & Hide")
+              ]
+          }
+
+          enum SpeedLaunchActionRouter {
+              static let didSubmitNotification = Notification.Name("com.isil.speed.launch-action")
+              private static let lock = NSLock()
+              private static var pendingTarget: SpeedLaunchTarget?
+
+              static func submit(_ target: SpeedLaunchTarget) {
+                  lock.lock()
+                  pendingTarget = target
+                  lock.unlock()
+                  NotificationCenter.default.post(name: didSubmitNotification, object: nil)
+              }
+
+              static func restorePending(_ target: SpeedLaunchTarget) {
+                  lock.lock()
+                  pendingTarget = target
+                  lock.unlock()
+              }
+
+              static func consumePendingTarget() -> SpeedLaunchTarget? {
+                  lock.lock()
+                  defer { lock.unlock() }
+                  let target = pendingTarget
+                  pendingTarget = nil
+                  return target
+              }
+          }
+
+          struct SpeedLaunchIntent: OpenIntent {
+              static var title: LocalizedStringResource = "Open Speed"
+              static var description = IntentDescription("Open Speed and optionally start its floating-window performance engine.")
+
+              @Parameter(title: "Action")
+              var target: SpeedLaunchTarget
+
+              init() { target = .open }
+              init(target: SpeedLaunchTarget) { self.target = target }
+
+              @MainActor
+              func perform() async throws -> some IntentResult {
+                  SpeedLaunchActionRouter.submit(target)
+                  return .result()
+              }
+          }
+          SWIFT
+
+          cat > "$PROJECT_ROOT/pip_swift/pip_swift/SceneDelegate.swift" <<'SWIFT'
+          import UIKit
+
+          final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+              var window: UIWindow?
+
+              func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
+                  guard let windowScene = scene as? UIWindowScene else { return }
+                  AppDisplayContext.register(windowScene)
+                  let window = UIWindow(windowScene: windowScene)
+                  window.rootViewController = ViewController()
+                  AppAppearancePreference.apply(to: window)
+                  self.window = window
+                  window.makeKeyAndVisible()
+                  NotificationCenter.default.addObserver(self, selector: #selector(handleSpeedLaunchAction), name: SpeedLaunchActionRouter.didSubmitNotification, object: nil)
+                  RefreshRateController.shared.reconcile()
+                  dispatchPendingSpeedLaunchTarget()
+              }
+
+              func sceneDidBecomeActive(_ scene: UIScene) {
+                  if let windowScene = scene as? UIWindowScene { AppDisplayContext.register(windowScene) }
+                  RefreshRateController.shared.reconcile()
+                  dispatchPendingSpeedLaunchTarget()
+          #if DEBUG
+                  DebugDiagnosticsMonitor.startIfNeeded()
+          #endif
+              }
+
+              func sceneDidEnterBackground(_ scene: UIScene) {
+          #if DEBUG
+                  DebugDiagnosticsMonitor.stop()
+          #endif
+                  RefreshRateController.shared.reconcile()
+              }
+
+              func sceneDidDisconnect(_ scene: UIScene) {
+                  if let windowScene = scene as? UIWindowScene { AppDisplayContext.unregister(windowScene) }
+                  LatencyExperimentController.shared.detach()
+                  RefreshRateController.shared.stop()
+              }
+
+              @objc private func handleSpeedLaunchAction() {
+                  dispatchPendingSpeedLaunchTarget()
+              }
+
+              private func dispatchPendingSpeedLaunchTarget() {
+                  guard let target = SpeedLaunchActionRouter.consumePendingTarget() else { return }
+                  guard let controller = window?.rootViewController as? ViewController else {
+                      SpeedLaunchActionRouter.restorePending(target)
+                      return
+                  }
+                  controller.handleSystemLaunchTarget(target)
+              }
+
+              deinit {
+                  NotificationCenter.default.removeObserver(self)
+              }
+          }
+          SWIFT
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ['PROJECT_ROOT'])
+
+          gov = root / 'pip_swift/pip_swift/PerformanceGovernor.swift'
+          s = gov.read_text()
+          old = 'counts = Dictionary(uniqueKeysWithValues: sorted.prefix(maxLearnedEntries))'
+          new = '''var trimmedCounts: [String: Int] = [:]
+            for entry in sorted.prefix(maxLearnedEntries) {
+                trimmedCounts[entry.key] = entry.value
+            }
+            counts = trimmedCounts'''
+          if old not in s:
+              raise SystemExit('PerformanceGovernor dictionary initializer pattern not found')
+          s = s.replace(old, new, 1)
+          old = 'return values.map(CGFloat.init)'
+          new = 'return values.map { CGFloat($0) }'
+          if old not in s:
+              raise SystemExit('PerformanceGovernor CGFloat map pattern not found')
+          s = s.replace(old, new, 1)
+          gov.write_text(s)
+
+          verify = root / 'scripts/verify_project.sh'
+          lines = verify.read_text().splitlines()
+          out = []
+          for line in lines:
+              if line.startswith("check_sh 'Shared OpenIntent has dual target membership'"):
+                  out.append("check_sh 'Shared OpenIntent has dual target membership' \"grep -q 'SpeedAppIntents.swift' '$PROJECT' && grep -q 'struct SpeedLaunchIntent: OpenIntent' '$APP/SpeedAppIntents.swift' && grep -q 'func perform() async throws' '$APP/SpeedAppIntents.swift'\"")
+              elif line.startswith("check_sh 'Scene delegate handles system launch intent'"):
+                  out.append("check_sh 'OpenIntent router handles system launch intent' \"grep -q 'SpeedLaunchActionRouter.didSubmitNotification' '$APP/SceneDelegate.swift' && grep -q 'restorePending(target)' '$APP/SceneDelegate.swift' && ! grep -q 'UISceneAppIntent\\|AppIntentSceneDelegate' '$APP/SceneDelegate.swift'\"")
+              else:
+                  out.append(line)
+          verify.write_text('\n'.join(out) + '\n')
+          PY
+          rm -rf build dist
+
+      - name: Select Xcode 26+
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/select_xcode_26.sh"
+
+      - name: Verify Speed 2.5.0 integration
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/verify_project.sh"
+
+      - name: Build unsigned IPA
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/build_unsigned_ipa.sh"
+
+      - name: Require warning-clean Swift build
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$PROJECT_ROOT/build/diagnostics/xcodebuild.log"
+          test -f "$log"
+          if grep -E '\.swift:[0-9]+:[0-9]+: warning:' "$log"; then
+            echo 'Swift source warnings are not allowed in Speed 2.5.0 final build.' >&2
+            exit 1
+          fi
+
+      - name: Validate and package outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          ipa="$GITHUB_WORKSPACE/out/Speed-2.5.0-All-Features-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-2.5.0-All-Features-Source.tar.gz"
+          cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" "$ipa"
+          unzip -t "$ipa"
+          test "$(unzip -l "$ipa" | grep -E 'Payload/Speed.app/CompatibilityMedia/h[0-9]{3}\.mov$' | wc -l | tr -d ' ')" -eq 3
+          test "$(unzip -l "$ipa" | grep -E 'Payload/Speed.app/CompatibilityMedia/h[0-9]{3}\.spm$' | wc -l | tr -d ' ')" -eq 217
+          unzip -l "$ipa" | grep -q 'Payload/Speed.app/PlugIns/SpeedControls.appex/SpeedControls$'
+          ! unzip -l "$ipa" | grep -qiE 'SnapKit|/Pods/'
+          python3 - "$ipa" <<'PY'
+          import plistlib, sys, zipfile
+          with zipfile.ZipFile(sys.argv[1]) as z:
+              app = plistlib.loads(z.read('Payload/Speed.app/Info.plist'))
+              ext = plistlib.loads(z.read('Payload/Speed.app/PlugIns/SpeedControls.appex/Info.plist'))
+          assert app['CFBundleShortVersionString'] == '2.5.0'
+          assert app['CFBundleVersion'] == '2026091002'
+          assert app['CFBundleIdentifier'] == 'com.isil.speed'
+          assert ext['CFBundleShortVersionString'] == '2.5.0'
+          assert ext['CFBundleVersion'] == '2026091002'
+          assert ext['CFBundleIdentifier'] == 'com.isil.speed.controls'
+          assert ext['NSExtension']['NSExtensionPointIdentifier'] == 'com.apple.widgetkit-extension'
+          print('Validated Speed 2.5.0 app + SpeedControls extension')
+          PY
+          shasum -a 256 "$ipa" > "$ipa.sha256"
+          tar --exclude='./build' --exclude='./dist' -czf "$src" -C "$PROJECT_ROOT" .
+          shasum -a 256 "$src" > "$src.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-2.5.0-All-Features
+          path: |
+            out/Speed-2.5.0-All-Features-unsigned.ipa
+            out/Speed-2.5.0-All-Features-unsigned.ipa.sha256
+            out/Speed-2.5.0-All-Features-Source.tar.gz
+            out/Speed-2.5.0-All-Features-Source.tar.gz.sha256
+          if-no-files-found: error
+
+      - name: Publish rolling prerelease assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa="$GITHUB_WORKSPACE/out/Speed-2.5.0-All-Features-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-2.5.0-All-Features-Source.tar.gz"
+          gh release upload dev-latest "$ipa" "$src" --clobber
+          gh release edit dev-latest --target "$GITHUB_SHA" --title "Speed 2.5.0 All Features" --notes "Speed 2.5.0 adds Auto mode, Smart Performance Governor, selectable CADisplayLink/UIUpdateLink/Hybrid refresh drivers, experimental Direct Compatibility resizing, bounded PiP self-healing, Performance Lab, smart height learning, favorites/default profiles, and a WidgetKit Control extension. Controls use OpenIntent perform routing compatible with the iOS 26.5 SDK, and the launch router avoids recursive reposting. The optimized 2.4 media/cache core and stable Standard 120 Hz route remain intact. Unsigned IPA: sign the app and embedded extension before installation." --prerelease
