@@ -1,0 +1,111 @@
+name: Build Speed 2.6.2 Compatibility Geometry Core
+
+on:
+  push:
+    branches: [speed-2.6-dev]
+    paths:
+      - '.github/workflows/build-ipa-2.6.2-compatibility-geometry-core.yml'
+      - 'scripts/speed262_patch.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  BASELINE_SOURCE: Speed-2.6.1-Compatibility-Refinement-Source.tar.gz
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - name: Check out Speed 2.6 development
+        uses: actions/checkout@v4
+        with:
+          ref: speed-2.6-dev
+
+      - name: Download Speed 2.6.1 source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE/source"
+          gh release download dev-latest --pattern "$BASELINE_SOURCE" --dir "$GITHUB_WORKSPACE/baseline"
+          tar -xzf "$GITHUB_WORKSPACE/baseline/$BASELINE_SOURCE" -C "$GITHUB_WORKSPACE/source"
+          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/source" >> "$GITHUB_ENV"
+
+      - name: Apply Speed 2.6.2 compatibility geometry core
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/scripts/speed262_patch.py" "$PROJECT_ROOT"
+          rm -rf "$PROJECT_ROOT/build" "$PROJECT_ROOT/dist"
+
+      - name: Select Xcode 26+
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/select_xcode_26.sh"
+
+      - name: Verify integration
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/verify_project.sh"
+
+      - name: Build unsigned IPA
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/build_unsigned_ipa.sh"
+
+      - name: Require warning-clean Swift build
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$PROJECT_ROOT/build/diagnostics/xcodebuild.log"
+          test -f "$log"
+          if grep -E '\.swift:[0-9]+:[0-9]+: warning:' "$log"; then
+            echo 'Swift warnings are not allowed in Speed 2.6.2.' >&2
+            exit 1
+          fi
+
+      - name: Validate and package outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          ipa="$GITHUB_WORKSPACE/out/Speed-2.6.2-Compatibility-Geometry-Core-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-2.6.2-Compatibility-Geometry-Core-Source.tar.gz"
+          cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" "$ipa"
+          unzip -t "$ipa"
+          unzip -l "$ipa" | grep -q 'Payload/Speed.app/PlugIns/SpeedControls.appex/SpeedControls$'
+          raw_count="$(unzip -l "$ipa" | grep -E 'Payload/Speed.app/CompatibilityMedia/h[0-9]{3}\.mov$' | wc -l | tr -d ' ')"
+          compact_count="$(unzip -l "$ipa" | grep -E 'Payload/Speed.app/CompatibilityMedia/h[0-9]{3}\.spm$' | wc -l | tr -d ' ')"
+          test "$raw_count" -eq 3
+          test "$compact_count" -eq 217
+          python3 -c "import plistlib,zipfile; z=zipfile.ZipFile('$ipa'); a=plistlib.loads(z.read('Payload/Speed.app/Info.plist')); e=plistlib.loads(z.read('Payload/Speed.app/PlugIns/SpeedControls.appex/Info.plist')); assert a['CFBundleShortVersionString']=='2.6.2' and a['CFBundleVersion']=='2026091006'; assert e['CFBundleShortVersionString']=='2.6.2' and e['CFBundleVersion']=='2026091006'; print('Validated Speed 2.6.2 app + extension')"
+          shasum -a 256 "$ipa" > "$ipa.sha256"
+          tar --exclude='./build' --exclude='./dist' -czf "$src" -C "$PROJECT_ROOT" .
+          shasum -a 256 "$src" > "$src.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-2.6.2-Compatibility-Geometry-Core
+          path: |
+            out/Speed-2.6.2-Compatibility-Geometry-Core-unsigned.ipa
+            out/Speed-2.6.2-Compatibility-Geometry-Core-unsigned.ipa.sha256
+            out/Speed-2.6.2-Compatibility-Geometry-Core-Source.tar.gz
+            out/Speed-2.6.2-Compatibility-Geometry-Core-Source.tar.gz.sha256
+          if-no-files-found: error
+
+      - name: Publish Speed 2.6.2 test assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa="$GITHUB_WORKSPACE/out/Speed-2.6.2-Compatibility-Geometry-Core-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-2.6.2-Compatibility-Geometry-Core-Source.tar.gz"
+          gh release upload dev-latest "$ipa" "$src" --clobber
+          gh release edit dev-latest \
+            --target "$GITHUB_SHA" \
+            --title 'Speed 2.6.2 Compatibility Geometry Core' \
+            --notes 'Fixes the Compatibility-only height bug at the architecture boundary. Manual Compatibility now uses the public VideoCall preferredContentSize geometry path that already resizes correctly on-device, while the Compatibility refresh policy remains separate and still releases Standard mode’s app-level hard-max refresh driver. The old Lab Direct Resize switch and persisted state are retired so resizing no longer depends on entering Lab. Compatibility keeps its 1-220pt integer sizing policy and 22pt default; one-tap minimum and stop-time restoration are corrected for the new backend. Auto fallback deliberately keeps the legacy PlayerLayer route, so recovery behavior and compact compatibility media remain available. No new video resources or extra per-frame work are added. A2 crash-loop recovery and 2.6 cadence guard remain included.' \
+            --prerelease
