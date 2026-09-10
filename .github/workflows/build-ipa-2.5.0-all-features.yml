@@ -1,0 +1,155 @@
+name: Build Speed 2.5.0 All Features IPA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-ipa-2.5.0-all-features.yml'
+      - 'patches/speed-2.5.0-all-features.part00'
+      - 'patches/speed-2.5.0-all-features.part01'
+      - 'patches/speed-2.5.0-all-features.part02'
+      - 'patches/speed-2.5.0-all-features.part03'
+      - 'patches/speed-2.5.0-all-features.part04'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  BASELINE_SOURCE: Speed-2.4.0-Performance-Core-Source.tar.gz
+  PATCH_SHA256: 054fe8e414463902a0e6a2c1d64eb93f04cf993a7ee67c8d2910c3e30b642afb
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download Speed 2.4.0 baseline source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE/source"
+          gh release download dev-latest \
+            --pattern "$BASELINE_SOURCE" \
+            --dir "$GITHUB_WORKSPACE/baseline"
+          tar -xzf "$GITHUB_WORKSPACE/baseline/$BASELINE_SOURCE" -C "$GITHUB_WORKSPACE/source"
+          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/source" >> "$GITHUB_ENV"
+
+      - name: Assemble and apply Speed 2.5.0 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          parts="$GITHUB_WORKSPACE/patches/speed-2.5.0-all-features.part"
+          cat "${parts}00" "${parts}01" "${parts}02" "${parts}03" "${parts}04" > "$RUNNER_TEMP/speed-2.5.0.patch.gz.b64"
+          python3 - <<'PY'
+          import base64, gzip, os, pathlib
+          src = pathlib.Path(os.environ['RUNNER_TEMP']) / 'speed-2.5.0.patch.gz.b64'
+          raw = base64.b64decode(src.read_bytes())
+          out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'speed-2.5.0.patch'
+          out.write_bytes(gzip.decompress(raw))
+          print(out)
+          PY
+          patch_file="$RUNNER_TEMP/speed-2.5.0.patch"
+          actual_patch_sha="$(shasum -a 256 "$patch_file" | awk '{print $1}')"
+          echo "Patch SHA-256: $actual_patch_sha"
+          test "$actual_patch_sha" = "$PATCH_SHA256"
+          cd "$PROJECT_ROOT"
+          patch --dry-run -p1 < "$patch_file"
+          patch -p1 < "$patch_file"
+          rm -rf build dist
+
+      - name: Select Xcode 26+
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/select_xcode_26.sh"
+
+      - name: Verify Speed 2.5.0 feature integration
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/verify_project.sh"
+
+      - name: Build unsigned IPA
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/build_unsigned_ipa.sh"
+
+      - name: Require warning-clean Swift build
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$PROJECT_ROOT/build/diagnostics/xcodebuild.log"
+          test -f "$log"
+          if grep -E '\.swift:[0-9]+:[0-9]+: warning:' "$log"; then
+            echo 'Swift source warnings are not allowed in Speed 2.5.0 final build.' >&2
+            exit 1
+          fi
+
+      - name: Validate and package outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          ipa="$GITHUB_WORKSPACE/out/Speed-2.5.0-All-Features-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-2.5.0-All-Features-Source.tar.gz"
+          cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" "$ipa"
+          unzip -t "$ipa"
+
+          raw_count="$(unzip -l "$ipa" | grep -E 'Payload/Speed.app/CompatibilityMedia/h[0-9]{3}\.mov$' | wc -l | tr -d ' ')"
+          compact_count="$(unzip -l "$ipa" | grep -E 'Payload/Speed.app/CompatibilityMedia/h[0-9]{3}\.spm$' | wc -l | tr -d ' ')"
+          test "$raw_count" -eq 3
+          test "$compact_count" -eq 217
+          unzip -l "$ipa" | grep -q 'Payload/Speed.app/PlugIns/SpeedControls.appex/SpeedControls$'
+          if unzip -l "$ipa" | grep -qiE 'SnapKit|/Pods/'; then
+            echo 'Unexpected third-party payload in final IPA' >&2
+            exit 1
+          fi
+
+          python3 - "$ipa" <<'PY'
+          import plistlib, sys, zipfile
+          ipa = sys.argv[1]
+          with zipfile.ZipFile(ipa) as z:
+              app = plistlib.loads(z.read('Payload/Speed.app/Info.plist'))
+              ext = plistlib.loads(z.read('Payload/Speed.app/PlugIns/SpeedControls.appex/Info.plist'))
+          assert app['CFBundleShortVersionString'] == '2.5.0', app
+          assert app['CFBundleVersion'] == '2026091002', app
+          assert app['CFBundleIdentifier'] == 'com.isil.speed', app
+          assert ext['CFBundleShortVersionString'] == '2.5.0', ext
+          assert ext['CFBundleVersion'] == '2026091002', ext
+          assert ext['CFBundleIdentifier'] == 'com.isil.speed.controls', ext
+          assert ext['NSExtension']['NSExtensionPointIdentifier'] == 'com.apple.widgetkit-extension', ext
+          print('Validated Speed 2.5.0 app + SpeedControls extension')
+          PY
+
+          echo "Final IPA bytes: $(stat -f%z "$ipa")"
+          shasum -a 256 "$ipa" > "$ipa.sha256"
+          tar --exclude='./build' --exclude='./dist' -czf "$src" -C "$PROJECT_ROOT" .
+          shasum -a 256 "$src" > "$src.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-2.5.0-All-Features
+          path: |
+            out/Speed-2.5.0-All-Features-unsigned.ipa
+            out/Speed-2.5.0-All-Features-unsigned.ipa.sha256
+            out/Speed-2.5.0-All-Features-Source.tar.gz
+            out/Speed-2.5.0-All-Features-Source.tar.gz.sha256
+          if-no-files-found: error
+
+      - name: Publish rolling prerelease assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa="$GITHUB_WORKSPACE/out/Speed-2.5.0-All-Features-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-2.5.0-All-Features-Source.tar.gz"
+          gh release upload dev-latest "$ipa" "$src" --clobber
+          gh release edit dev-latest \
+            --target "$GITHUB_SHA" \
+            --title "Speed 2.5.0 All Features" \
+            --notes "Speed 2.5.0 adds Auto mode, Smart Performance Governor, selectable CADisplayLink/UIUpdateLink/Hybrid refresh drivers, experimental Direct Compatibility resizing, bounded PiP self-healing, Performance Lab signposts and latency statistics, smart height learning, favorites/default profiles, and a real WidgetKit Control extension for Open/Start/Start & Hide actions. The 2.4.0 optimized media/cache pipeline and stable Standard 120 Hz route remain intact. Experimental refresh/direct-resize controls are opt-in. Unsigned IPA: sign the app and embedded extension before installation." \
+            --prerelease
