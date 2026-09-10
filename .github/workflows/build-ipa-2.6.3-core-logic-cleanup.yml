@@ -40,7 +40,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base64 --decode "$GITHUB_WORKSPACE/scripts/speed263_patch.py.gz.b64" | gunzip > "$RUNNER_TEMP/speed263_patch.py"
+          cat "$GITHUB_WORKSPACE/scripts/speed263_patch.py.gz.b64" | base64 -D | gunzip > "$RUNNER_TEMP/speed263_patch.py"
           actual="$(shasum -a 256 "$RUNNER_TEMP/speed263_patch.py" | awk '{print $1}')"
           test "$actual" = "$PATCH_SHA256"
           python3 "$RUNNER_TEMP/speed263_patch.py" "$PROJECT_ROOT"
