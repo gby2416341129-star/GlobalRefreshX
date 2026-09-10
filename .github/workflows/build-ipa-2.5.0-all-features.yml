@@ -62,6 +62,33 @@ jobs:
           cd "$PROJECT_ROOT"
           patch --dry-run -p1 < "$patch_file"
           patch -p1 < "$patch_file"
+
+          # Xcode 26.6/iOS 26.5 SDK: the shared WidgetKit extension source cannot
+          # reference UISceneAppIntent. OpenIntent itself is the supported
+          # foreground-opening contract for a ControlWidgetButton, so keep the
+          # intent shared by both targets and route the requested action from perform().
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ['PROJECT_ROOT'])
+          intent = root / 'pip_swift/pip_swift/SpeedAppIntents.swift'
+          text = intent.read_text()
+          old = 'struct SpeedLaunchIntent: OpenIntent, UISceneAppIntent {'
+          new = 'struct SpeedLaunchIntent: OpenIntent {'
+          if old not in text:
+              raise SystemExit('Expected UISceneAppIntent declaration was not found')
+          intent.write_text(text.replace(old, new, 1))
+
+          verify = root / 'scripts/verify_project.sh'
+          v = verify.read_text()
+          v = v.replace('UISceneAppIntent', 'OpenIntent')
+          verify.write_text(v)
+          PY
+
+          echo '===== SpeedAppIntents.swift ====='
+          sed -n '1,220p' "$PROJECT_ROOT/pip_swift/pip_swift/SpeedAppIntents.swift"
+          echo '===== SceneDelegate app-intent excerpts ====='
+          grep -n -C 5 -E 'AppIntent|SpeedLaunch|systemLaunch|pending' "$PROJECT_ROOT/pip_swift/pip_swift/SceneDelegate.swift" || true
           rm -rf build dist
 
       - name: Select Xcode 26+
