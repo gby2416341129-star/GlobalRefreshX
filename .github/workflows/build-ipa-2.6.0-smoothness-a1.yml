@@ -5,6 +5,7 @@ on:
     branches: [speed-2.6-dev]
     paths:
       - '.github/workflows/build-ipa-2.6.0-smoothness-a1.yml'
+      - 'scripts/speed26_patch.py'
   workflow_dispatch:
 
 permissions:
@@ -40,129 +41,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          root = Path(os.environ['PROJECT_ROOT'])
-          refresh = root / 'pip_swift/pip_swift/RefreshRateController.swift'
-          text = refresh.read_text()
-
-          old = '''    private var configuredFrameRate: Float = 0
-    private(set) var runtimeMode: RefreshRuntimeMode = .videoCall'''
-          new = '''    private var configuredFrameRate: Float = 0
-    // 2.6 cadence guard: keep the production clock nearly empty, but detect a
-    // persistent scheduler downshift and re-assert the already requested range.
-    // A two-sample streak rejects isolated hitches; the cooldown prevents a
-    // system policy clamp from turning this into a reconfiguration loop.
-    private var lastDisplayTimestamp: CFTimeInterval = 0
-    private var cadenceSlowStreak = 0
-    private var lastCadenceRecoveryTimestamp: CFTimeInterval = 0
-    private let cadenceSlowMultiplier: Double = 1.34
-    private let cadenceRecoveryCooldown: CFTimeInterval = 0.75
-    private(set) var runtimeMode: RefreshRuntimeMode = .videoCall'''
-          if old not in text:
-              raise SystemExit('Refresh state insertion pattern missing')
-          text = text.replace(old, new, 1)
-
-          old = '''    private func stopDisplayLink() {
-        displayLink?.invalidate()
-        displayLink = nil
-        configuredFrameRate = 0
-    }'''
-          new = '''    private func stopDisplayLink() {
-        displayLink?.invalidate()
-        displayLink = nil
-        configuredFrameRate = 0
-        lastDisplayTimestamp = 0
-        cadenceSlowStreak = 0
-        lastCadenceRecoveryTimestamp = 0
-    }'''
-          if old not in text:
-              raise SystemExit('stopDisplayLink pattern missing')
-          text = text.replace(old, new, 1)
-
-          old = '''        let link = UIUpdateLink(view: anchorView, actionHandler: { _, _ in
-            // Deliberately empty: the link expresses a refresh preference without adding per-frame work.
-        })'''
-          new = '''        // No action handler is needed when the link only expresses update preferences.
-        // This removes one Swift closure dispatch from every UI update in 2.6.
-        let link = UIUpdateLink(view: anchorView)'''
-          if old not in text:
-              raise SystemExit('production UIUpdateLink action-handler pattern missing')
-          text = text.replace(old, new, 1)
-
-          old = '''    @objc private func step(_ link: CADisplayLink) {
-        // Intentionally empty. Any main-thread work here steals from the 8.33 ms budget.
-    }'''
-          new = '''    @objc private func step(_ link: CADisplayLink) {
-        // Speed 2.6 keeps this hot path intentionally tiny. We do not sample CPU,
-        // allocate, log, walk scenes, or touch UI here. The only work is cadence
-        // continuity bookkeeping using timestamps already supplied by CADisplayLink.
-        let timestamp = link.timestamp
-        defer { lastDisplayTimestamp = timestamp }
-
-        let target = Double(configuredFrameRate)
-        guard target >= 100, lastDisplayTimestamp > 0 else { return }
-
-        let expectedInterval = 1.0 / target
-        let observedInterval = timestamp - lastDisplayTimestamp
-        if observedInterval > expectedInterval * cadenceSlowMultiplier {
-            cadenceSlowStreak += 1
-        } else {
-            cadenceSlowStreak = 0
-            return
-        }
-
-        guard cadenceSlowStreak >= 2,
-              timestamp - lastCadenceRecoveryTimestamp >= cadenceRecoveryCooldown
-        else { return }
-
-        // Re-assert, don't escalate: the same hard-max request is applied again.
-        // If iOS is intentionally clamping refresh for system policy, cooldown
-        // prevents repeated writes while still allowing recovery after transitions.
-        configure(link, requested: configuredFrameRate)
-        cadenceSlowStreak = 0
-        lastCadenceRecoveryTimestamp = timestamp
-    }'''
-          if old not in text:
-              raise SystemExit('CADisplayLink step pattern missing')
-          text = text.replace(old, new, 1)
-
-          old = '''            let link = UIUpdateLink(view: anchorView, actionHandler: { _, _ in
-                // Intentionally empty. The continuous link itself is the experiment.
-                // Speed's existing stable CADisplayLink remains responsible for the 120 Hz preference.
-            })'''
-          new = '''            // Preference-only UIUpdateLink: continuous scheduling without an empty
-            // per-frame callback. Stable CADisplayLink still owns the 120 Hz anchor.
-            let link = UIUpdateLink(view: anchorView)'''
-          if old not in text:
-              raise SystemExit('laboratory UIUpdateLink action-handler pattern missing')
-          text = text.replace(old, new, 1)
-          refresh.write_text(text)
-
-          project = root / 'pip_swift/pip_swift.xcodeproj/project.pbxproj'
-          p = project.read_text()
-          if 'MARKETING_VERSION = 2.5.0;' not in p or 'CURRENT_PROJECT_VERSION = 2026091002;' not in p:
-              raise SystemExit('2.5 version/build markers missing')
-          p = p.replace('MARKETING_VERSION = 2.5.0;', 'MARKETING_VERSION = 2.6.0;')
-          p = p.replace('CURRENT_PROJECT_VERSION = 2026091002;', 'CURRENT_PROJECT_VERSION = 2026091003;')
-          project.write_text(p)
-
-          verify = root / 'scripts/verify_project.sh'
-          v = verify.read_text()
-          v = v.replace("check_sh 'Speed version 2.5.0' \"grep -q 'MARKETING_VERSION = 2.5.0' '$PROJECT'\"",
-                        "check_sh 'Speed version 2.6.0' \"grep -q 'MARKETING_VERSION = 2.6.0' '$PROJECT'\"")
-          v = v.replace("check_sh 'Speed build 2026091002' \"grep -q 'CURRENT_PROJECT_VERSION = 2026091002' '$PROJECT'\"",
-                        "check_sh 'Speed build 2026091003' \"grep -q 'CURRENT_PROJECT_VERSION = 2026091003' '$PROJECT'\"")
-          old_check = "check_sh 'Standard display link callback stays empty' \"grep -q 'Any main-thread work here steals from the 8.33 ms budget' '$REFRESH'\""
-          new_checks = """check_sh '2.6 cadence guard avoids heavy hot-path work' \"grep -q 'cadenceSlowStreak >= 2' '$REFRESH' && grep -q 'cadenceRecoveryCooldown' '$REFRESH' && ! sed -n '/@objc private func step/,/^    }/p' '$REFRESH' | grep -Eq 'AppDebugLogger|UserDefaults|connectedScenes|DispatchQueue'\"
-check_sh '2.6 production UIUpdateLink has no empty callback' \"grep -q 'let link = UIUpdateLink(view: anchorView)' '$REFRESH' && ! grep -q 'UIUpdateLink(view: anchorView, actionHandler:' '$REFRESH'\""""
-          if old_check not in v:
-              raise SystemExit('old verify callback check missing')
-          v = v.replace(old_check, new_checks, 1)
-          verify.write_text(v)
-          PY
+          python3 "$GITHUB_WORKSPACE/scripts/speed26_patch.py" "$PROJECT_ROOT"
           rm -rf "$PROJECT_ROOT/build" "$PROJECT_ROOT/dist"
 
       - name: Select Xcode 26+
@@ -201,19 +80,7 @@ check_sh '2.6 production UIUpdateLink has no empty callback' \"grep -q 'let link
           test "$(unzip -l "$ipa" | grep -E 'Payload/Speed.app/CompatibilityMedia/h[0-9]{3}\.spm$' | wc -l | tr -d ' ')" -eq 217
           unzip -l "$ipa" | grep -q 'Payload/Speed.app/PlugIns/SpeedControls.appex/SpeedControls$'
           ! unzip -l "$ipa" | grep -qiE 'SnapKit|/Pods/'
-          python3 - "$ipa" <<'PY'
-          import plistlib, sys, zipfile
-          with zipfile.ZipFile(sys.argv[1]) as z:
-              app = plistlib.loads(z.read('Payload/Speed.app/Info.plist'))
-              ext = plistlib.loads(z.read('Payload/Speed.app/PlugIns/SpeedControls.appex/Info.plist'))
-          assert app['CFBundleShortVersionString'] == '2.6.0'
-          assert app['CFBundleVersion'] == '2026091003'
-          assert app['CFBundleIdentifier'] == 'com.isil.speed'
-          assert ext['CFBundleShortVersionString'] == '2.6.0'
-          assert ext['CFBundleVersion'] == '2026091003'
-          assert ext['CFBundleIdentifier'] == 'com.isil.speed.controls'
-          print('Validated Speed 2.6.0 A1 app + SpeedControls extension')
-          PY
+          python3 -c "import plistlib,zipfile; z=zipfile.ZipFile('$ipa'); a=plistlib.loads(z.read('Payload/Speed.app/Info.plist')); e=plistlib.loads(z.read('Payload/Speed.app/PlugIns/SpeedControls.appex/Info.plist')); assert a['CFBundleShortVersionString']=='2.6.0' and a['CFBundleVersion']=='2026091003' and a['CFBundleIdentifier']=='com.isil.speed'; assert e['CFBundleShortVersionString']=='2.6.0' and e['CFBundleVersion']=='2026091003' and e['CFBundleIdentifier']=='com.isil.speed.controls'; print('Validated Speed 2.6.0 A1 app + extension')"
           shasum -a 256 "$ipa" > "$ipa.sha256"
           tar --exclude='./build' --exclude='./dist' -czf "$src" -C "$PROJECT_ROOT" .
           shasum -a 256 "$src" > "$src.sha256"
