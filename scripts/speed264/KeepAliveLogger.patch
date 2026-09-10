@@ -1,0 +1,140 @@
+--- /mnt/data/speed264_src/pip_swift/pip_swift/KeepAliveLogger.swift	2026-09-09 17:07:56.000000000 +0000
++++ /mnt/data/speed264_mod/pip_swift/pip_swift/KeepAliveLogger.swift	2026-09-10 08:56:55.029924457 +0000
+@@ -404,7 +404,7 @@
+ 	    private static let backgroundProbeEnabledKey = "pip.keepAlive.backgroundProbeNotificationEnabled"
+ 	    private static let pipStoppedEnabledKey = "pip.keepAlive.pipStoppedNotificationEnabled"
+ 	    private static let splitNotificationMigrationKey = "pip.keepAlive.notificationSplit.v1"
+-	    private static let pipStoppedDefaultMigrationKey = "pip.keepAlive.pipStoppedNotificationDefault.v1"
++	    private static let pipStoppedDefaultMigrationKey = "pip.keepAlive.pipStoppedNotificationDefault.v2"
+     private static let frequencyKey = "pip.keepAlive.notificationProbeFrequency"
+     private static let frequencyMigrationKey = "pip.keepAlive.notificationProbeFrequency.v6"
+     private static let defaultProbeFrequency = KeepAliveNotificationProbeFrequency.low
+@@ -451,20 +451,19 @@
+ 	            AppDebugLogger.log("后台通知开关已拆分，旧开关不自动迁移，两个新开关默认关闭")
+ 	        }
+ 	    }
+-
+-	    static func enablePiPStoppedNotificationByDefaultIfNeeded(from controller: UIViewController?, completion: @escaping (Bool) -> Void) {
+-	        migrateSplitNotificationPreferencesIfNeeded()
+-	        guard !UserDefaults.standard.bool(forKey: pipStoppedDefaultMigrationKey) else {
+-	            completion(isPiPStoppedNotificationEnabled)
+-	            return
+-	        }
+-	        UserDefaults.standard.set(true, forKey: pipStoppedDefaultMigrationKey)
+-	        guard UserDefaults.standard.object(forKey: pipStoppedEnabledKey) == nil else {
+-	            completion(isPiPStoppedNotificationEnabled)
+-	            return
+-	        }
+-	        prepareForPiPStoppedToggle(from: controller, shouldOpenSettingsOnDenied: false, completion: completion)
+-	    }
++    static func enablePiPStoppedNotificationByDefaultIfNeeded(from controller: UIViewController?, completion: @escaping (Bool) -> Void) {
++        migrateSplitNotificationPreferencesIfNeeded()
++        guard !UserDefaults.standard.bool(forKey: pipStoppedDefaultMigrationKey) else {
++            completion(isPiPStoppedNotificationEnabled)
++            return
++        }
++        // v2 intentionally offers the conflict alert once even when an older Speed
++        // build wrote `false` into the legacy preference. Older builds force-disabled
++        // this feature, so that stored value is not reliable evidence that the user
++        // explicitly opted out.
++        UserDefaults.standard.set(true, forKey: pipStoppedDefaultMigrationKey)
++        prepareForPiPStoppedToggle(from: controller, shouldOpenSettingsOnDenied: false, completion: completion)
++    }
+ 
+     static var isEnabled: Bool {
+         isBackgroundProbeEnabled
+@@ -1347,27 +1346,44 @@
+         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [backgroundProbeIdentifier])
+     }
+ 
++    static func schedulePiPConflictNotification(mode: String, reason: String) {
++        guard isPiPStoppedNotificationEnabled else { return }
++        schedulePiPStatusNotification(
++            title: L10n.text("Speed：120Hz 已暂停", "Speed: 120Hz paused"),
++            body: L10n.text(
++                "检测到其他画中画占用或顶替了 Speed 悬浮窗，当前高刷新保持已暂停。关闭其他画中画并重新启动 Speed 即可恢复。模式：\(mode)",
++                "Another Picture in Picture session occupied or replaced Speed's PiP, so high-refresh keep-alive is paused. Close the other PiP and restart Speed to resume. Mode: \(mode)"
++            ),
++            pendingReason: "其他画中画占用或顶替 Speed 悬浮窗，120Hz 已暂停",
++            logReason: reason
++        )
++    }
++
+     static func schedulePiPStoppedNotification(mode: String, reason: String) {
+         guard isPiPStoppedNotificationEnabled else { return }
++        schedulePiPStatusNotification(
++            title: L10n.text("Speed 已暂停", "Speed paused"),
++            body: L10n.text(
++                "检测到 Speed 悬浮窗被系统意外停止，当前高刷新保持已暂停。重新进入 Speed 并启动悬浮窗即可恢复。模式：\(mode)",
++                "The system unexpectedly stopped Speed's PiP, so high-refresh keep-alive is paused. Open Speed and restart the floating window to resume. Mode: \(mode)"
++            ),
++            pendingReason: "Speed 悬浮窗被系统意外停止，高刷新保持已暂停",
++            logReason: reason
++        )
++    }
++
++    private static func schedulePiPStatusNotification(
++        title: String,
++        body: String,
++        pendingReason: String,
++        logReason: String
++    ) {
+         DispatchQueue.main.async {
+             requestAuthorizationIfNeeded()
+             let stoppedAt = Date()
+-            let stoppedText = notificationDateText(stoppedAt)
+-            let notificationBody = L10n.text(
+-                """
+-                中断时间：\(stoppedText)
+-                原因：可能被其他画中画应用挤掉或被系统停止
+-                模式：\(mode)
+-                """,
+-                """
+-                Stopped at: \(stoppedText)
+-                Reason: another PiP app or the system may have stopped it
+-                Mode: \(mode)
+-                """
+-            )
+             let content = UNMutableNotificationContent()
+-            content.title = L10n.text("全局高刷悬浮窗已停止", "Global Refresh PiP Stopped")
+-            content.body = notificationBody
++            content.title = title
++            content.body = body
+             content.sound = .default
+ 
+             let trigger = UNTimeIntervalNotificationTrigger(timeInterval: immediateDelay, repeats: false)
+@@ -1376,16 +1392,19 @@
+             center.removePendingNotificationRequests(withIdentifiers: [pipStoppedIdentifier])
+             center.add(request) { error in
+                 if let error {
+-                    AppDebugLogger.log("悬浮窗停止本地通知安排失败：\(error.localizedDescription)")
++                    AppDebugLogger.log("Speed暂停本地通知安排失败：\(error.localizedDescription)")
+                 } else {
+                     storePendingLocalNotificationNotice(
+                         identifier: pipStoppedIdentifier,
+                         interruptedAt: stoppedAt,
+-                        reason: "可能被其他画中画应用挤掉或被系统停止",
++                        reason: pendingReason,
++                        fireAt: stoppedAt.addingTimeInterval(immediateDelay)
++                    )
++                    KeepAliveLogger.markNotificationScheduled(
++                        reason: "Speed暂停：\(logReason)",
+                         fireAt: stoppedAt.addingTimeInterval(immediateDelay)
+                     )
+-                    KeepAliveLogger.markNotificationScheduled(reason: "悬浮窗停止：\(reason)，可能中断=\(stoppedText)", fireAt: stoppedAt.addingTimeInterval(immediateDelay))
+-                    AppDebugLogger.log("悬浮窗停止本地通知已安排，原因=\(reason)，可能中断=\(stoppedText)")
++                    AppDebugLogger.log("Speed暂停本地通知已安排，原因=\(logReason)")
+                 }
+             }
+         }
+@@ -1461,8 +1480,8 @@
+                 )
+             case .pipStopped:
+                 message = L10n.text(
+-                    "通知权限用于在悬浮窗被其他画中画应用挤掉或被系统停止时通知。",
+-                    "Notifications are used to alert you when another Picture in Picture app or the system stops the floating window."
++                    "建议开启通知。当其他画中画占用或顶替 Speed 悬浮窗、导致高刷新保持暂停时，Speed 会立即提醒你，并告诉你如何恢复。",
++                    "Notifications let Speed alert you when another Picture in Picture session occupies or replaces its PiP and pauses high-refresh keep-alive, with instructions to recover."
+                 )
+             }
+ 
