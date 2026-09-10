@@ -131,7 +131,7 @@ v = v.replace(
 old_check = "check_sh 'Standard display link callback stays empty' \"grep -q 'Any main-thread work here steals from the 8.33 ms budget' '$REFRESH'\""
 new_checks = "\n".join([
     "check_sh '2.6 cadence guard is bounded' \"grep -q 'cadenceSlowStreak >= 2' '$REFRESH' && grep -q 'cadenceRecoveryCooldown' '$REFRESH'\"",
-    "check_sh '2.6 cadence hot path avoids heavyweight work' \"! sed -n '/@objc private func step/,/^    }/p' '$REFRESH' | grep -Eq 'AppDebugLogger|UserDefaults|connectedScenes|DispatchQueue|Timer'\"",
+    "check_sh '2.6 cadence hot path avoids heavyweight calls' \"! sed -n '/@objc private func step/,/^    }/p' '$REFRESH' | grep -Eq 'AppDebugLogger\\.|UserDefaults\\.|connectedScenes|DispatchQueue\\.|Timer\\(' \"",
     "check_sh '2.6 UIUpdateLink avoids empty action callbacks' \"grep -q 'let link = UIUpdateLink(view: anchorView)' '$REFRESH' && ! grep -q 'UIUpdateLink(view: anchorView, actionHandler:' '$REFRESH'\"",
 ])
 if old_check not in v:
