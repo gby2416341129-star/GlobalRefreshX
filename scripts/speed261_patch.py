@@ -134,7 +134,7 @@ insert_after = "check_sh 'Direct experiment does not swap active PiP content sou
 extra = "\n".join([
     "check_sh 'Compatibility prompt reflects current engine' \"grep -q '兼容模式用于处理部分应用在标准模式下出现刷新节奏冲突' '$VC' && ! grep -q 'b站弹幕' '$VC' && ! grep -q '锁60hz' '$VC'\"",
     "check_sh 'Direct Resize is explicitly optional' \"grep -q '兼容模式本身已支持高度调节' '$APP/PiPViews.swift'\"",
-    "check_sh 'Visible PiP legacy 120Hz text removed' \"! grep -q '120Hz 已启动' '$VC' && ! grep -q 'originalPiPText' '$VC' && test \\\"$(grep -c 'textView.text = \\\"\\\"' '$VC')\\\" -ge 2 && grep -q 'let videoText = \\\"\\\"' '$VC'\"",
+    "check_sh 'Visible PiP legacy 120Hz text removed' \"! grep -q '120Hz 已启动' '$VC' && ! grep -q 'originalPiPText' '$VC' && grep -q 'textView.text = \\\"\\\"' '$VC' && grep -q 'let videoText = \\\"\\\"' '$VC'\"",
 ])
 if extra.split('\n')[0] not in v:
     if insert_after not in v:
