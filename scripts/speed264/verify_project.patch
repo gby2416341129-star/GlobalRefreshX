@@ -1,0 +1,36 @@
+--- /mnt/data/speed264_src/scripts/verify_project.sh	2026-09-10 08:17:20.000000000 +0000
++++ /mnt/data/speed264_mod/scripts/verify_project.sh	2026-09-10 08:58:27.957287914 +0000
+@@ -25,8 +25,8 @@
+ CONTROLS="pip_swift/SpeedControls/SpeedControls.swift"
+ CACHE="$APP/DiagnosticsResetManager.swift"
+ 
+-check_sh 'Speed version 2.6.3' "grep -q 'MARKETING_VERSION = 2.6.3' '$PROJECT'"
+-check_sh 'Speed build 2026091007' "grep -q 'CURRENT_PROJECT_VERSION = 2026091007' '$PROJECT'"
++check_sh 'Speed version 2.6.4' "grep -q 'MARKETING_VERSION = 2.6.4' '$PROJECT'"
++check_sh 'Speed build 2026091008' "grep -q 'CURRENT_PROJECT_VERSION = 2026091008' '$PROJECT'"
+ check_sh 'iOS 26 deployment target' "grep -q 'IPHONEOS_DEPLOYMENT_TARGET = 26.0' '$PROJECT'"
+ check_sh 'Speed identity retained' "grep -q 'PRODUCT_BUNDLE_IDENTIFIER = com.isil.speed' '$PROJECT' && grep -q 'PRODUCT_NAME = Speed' '$PROJECT'"
+ check_sh 'Release is whole-module optimized' "grep -q 'SWIFT_COMPILATION_MODE = wholemodule' '$PROJECT' && grep -q 'SWIFT_OPTIMIZATION_LEVEL = \"-O\"' '$PROJECT'"
+@@ -46,7 +46,7 @@
+ check_sh '2.6 cadence hot path avoids heavyweight calls' "! sed -n '/@objc private func step/,/^    }/p' '$REFRESH' | grep -Eq 'AppDebugLogger\.|UserDefaults\.|connectedScenes|DispatchQueue\.|Timer\(' "
+ check_sh 'A2 cold launch forces stable CADisplayLink' "grep -A4 'private init()' '$REFRESH' | grep -q 'driverMode = .cadisplayLink' && grep -A4 'private init()' '$REFRESH' | grep -q 'removeObject(forKey: driverModeKey)'"
+ check_sh 'A2 Lab driver is not persisted' "sed -n '/func setDriverMode/,/^    }/p' '$REFRESH' | grep -q 'removeObject(forKey: driverModeKey)' && ! sed -n '/func setDriverMode/,/^    }/p' '$REFRESH' | grep -q 'UserDefaults.standard.set'"
+-check_sh '2.6.3 quarantines UIUpdateLink construction' "! grep -q 'UIUpdateLink(' '$REFRESH' && grep -q 'quarantineUnsafeExperiments' '$REFRESH'"
++check_sh '2.6.4 quarantines UIUpdateLink construction' "! grep -q 'UIUpdateLink(' '$REFRESH' && grep -q 'quarantineUnsafeExperiments' '$REFRESH'"
+ check_sh 'Compatibility route releases foreground refresh driver' "grep -q 'runtimeMode == .videoCall' '$REFRESH'"
+ check_sh 'Experimental driver enum retained for future isolated builds' "grep -q 'enum RefreshDriverMode' '$REFRESH' && grep -q 'case uiUpdateLink' '$REFRESH' && grep -q 'case hybrid' '$REFRESH'"
+ check_sh 'Stable driver remains fixed-target CADisplayLink' "grep -q 'startOrUpdateHardMaxDisplayLink' '$REFRESH' && grep -q 'link.preferredFrameRateRange = CAFrameRateRange' '$REFRESH'"
+@@ -136,4 +136,13 @@
+ check_sh 'Custom style uses selected profile default' "grep -q 'isCurrentlyCompact ? currentDefaultPiPHeight : compactHeight' '$VC'"
+ check_sh 'Performance snapshot is cached and last sample is chronological' "grep -q 'snapshotCacheLifetime' '$APP/PerformanceLab.swift' && grep -q 'trueLastApplyMilliseconds' '$APP/PerformanceLab.swift'"
+ 
++check_sh 'First one-tap hide requires native side-stash calibration' "grep -q '先手动吸附一次' '$VC' && grep -q 'speed.oneTapHide.sideStashCalibration.v1' '$VC' && grep -q 'beginSideStashCalibration' '$VC'"
++check_sh 'Calibrated one-tap hide records edge and normalized Y' "grep -q 'PiPSideStashCalibration' '$VC' && grep -q 'normalizedCenterY' '$VC' && grep -q 'hiddenFraction' '$VC'"
++check_sh 'Side-stash calibration monitoring is temporary and bounded' "grep -q 'Date().addingTimeInterval(25)' '$VC' && grep -q 'Timer(timeInterval: 0.12' '$VC' && grep -q 'sideStashCalibrationTimer?.invalidate()' '$VC'"
++check_sh 'Replay does not misuse PiP interruption suspension as edge stash' "! grep -q 'requestPiPProxySuspended' '$APP/PiPCompatibilityAdapter.swift' && ! grep -q 'pictureInPictureSuspended' '$APP/PiPCompatibilityAdapter.swift'"
++check_sh 'PiP conflict pause reason persists for relaunch UI' "grep -q 'speed.runtime.pauseReason.v1' '$VC' && grep -q 'pictureInPictureConflict' '$APP/HomePresentationState.swift' && grep -q '120Hz 已暂停' '$APP/HomePresentationState.swift'"
++check_sh 'PiP conflict local notification has explicit recovery guidance' "grep -q 'schedulePiPConflictNotification' '$APP/KeepAliveLogger.swift' && grep -q 'Speed：120Hz 已暂停' '$APP/KeepAliveLogger.swift' && grep -q '关闭其他画中画并重新启动 Speed 即可恢复' '$APP/KeepAliveLogger.swift'"
++check_sh 'PiP notification permission is re-offered with v2 migration' "grep -q 'pipStoppedNotificationDefault.v2' '$APP/KeepAliveLogger.swift' && grep -A14 'enablePiPStoppedNotificationByDefaultIfNeeded' '$APP/KeepAliveLogger.swift' | grep -q 'prepareForPiPStoppedToggle'"
++check_sh 'Unexpected PiP stop classifies conflict and pauses refresh engine' "grep -q 'pipStopConflictLikely' '$VC' && grep -q 'setSpeedPauseReason(.pictureInPictureConflict' '$VC' && grep -A8 'private func setSpeedPauseReason' '$VC' | grep -q 'setEngineEnabled(false)'"
++
+ check_sh 'No visionOS-only AVPlayer backgrounding API on iOS' "! grep -q 'preventsAutomaticBackgroundingDuringVideoPlayback' '$VC'"
