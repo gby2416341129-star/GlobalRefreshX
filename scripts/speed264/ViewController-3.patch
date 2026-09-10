@@ -1,0 +1,194 @@
+--- /mnt/data/speed264_src/pip_swift/pip_swift/ViewController.swift	2026-09-10 08:17:20.000000000 +0000
++++ /mnt/data/speed264_mod/pip_swift/pip_swift/ViewController.swift	2026-09-10 09:01:28.103971600 +0000
+@@ -2666,11 +3021,19 @@
+ 
+     private func handleOwnPiPInvalidated(reason: String) {
+         let hadOwnSession = isOwnPiPConfirmedActive || pipRuntimeStartedAt != nil
+-        let shouldNotifyStopped = hadOwnSession
+-            && !isStoppingPiP
+-            && !isClosingPiPFromCustomContentTap
++        let wasUnexpected = hadOwnSession && !isStoppingPiP && !isClosingPiPFromCustomContentTap
++        let shouldNotifyStopped = wasUnexpected
+             && !KeepAliveNotificationTester.shouldSuppressPiPStoppedNotification(reason: reason)
+         let stoppedMode = currentKeepAlivePolicy.diagnosticsName
++        let normalizedReason = reason.lowercased()
++        let likelyPiPConflict = wasUnexpected && (
++            pipController?.isPictureInPictureSuspended == true
++                || pipController?.isPictureInPicturePossible == false
++                || normalizedReason.contains("其他pip")
++                || normalizedReason.contains("其他画中画")
++                || normalizedReason.contains("挤掉")
++                || normalizedReason.contains("顶替")
++        )
+         let invalidatedBackend = currentPiPBackend
+         pipExpectedActiveBeforeStop = nil
+         resumeAutoHiddenOverheadIfNeeded(reason: "PiP失效")
+@@ -2709,9 +3072,23 @@
+         if hadOwnSession {
+             KeepAliveLogger.markPiPStopped(reason: reason)
+         }
+-        if shouldNotifyStopped {
+-            KeepAliveNotificationTester.schedulePiPStoppedNotification(mode: stoppedMode, reason: reason)
++        if wasUnexpected {
++            if likelyPiPConflict {
++                setSpeedPauseReason(.pictureInPictureConflict, source: reason)
++                if shouldNotifyStopped {
++                    KeepAliveNotificationTester.schedulePiPConflictNotification(mode: stoppedMode, reason: reason)
++                }
++            } else {
++                setSpeedPauseReason(.unexpectedPiPStop, source: reason)
++                if shouldNotifyStopped {
++                    KeepAliveNotificationTester.schedulePiPStoppedNotification(mode: stoppedMode, reason: reason)
++                }
++            }
+         }
++        isCalibratedSideStashActive = false
++        isReplayingCalibratedSideStash = false
++        sideStashCalibrationTimer?.invalidate()
++        sideStashCalibrationTimer = nil
+         updateContinuousDiagnosticsForStableVideoCall(reason: "PiP失效")
+         ProcessTerminationDiagnostics.recordCheckpoint(reason: "PiP失效：\(reason)")
+         AppDebugLogger.log("Own PiP invalidated: \(reason)")
+@@ -2905,8 +3282,22 @@
+                 let isSuspended = self.pipController?.isPictureInPictureSuspended ?? false
+                 self.pipLifecycle.setSuspendedAtSide(isSuspended)
+                 AppDebugLogger.log("PiP suspend state changed: \(isSuspended), height=\(self.formattedHeight(self.clampedPiPHeight)), clock=\(self.shouldRenderClockMode), scroll=\(self.isScrollingEnabled)")
++
++                if isSuspended, self.isOwnPiPConfirmedActive {
++                    self.setSpeedPauseReason(.pictureInPictureConflict, source: "AVKit reported PiP suspension")
++                    KeepAliveNotificationTester.schedulePiPConflictNotification(
++                        mode: self.currentKeepAlivePolicy.diagnosticsName,
++                        reason: "检测到其他画中画占用系统PiP"
++                    )
++                } else if !isSuspended, self.speedPauseReason == .pictureInPictureConflict, self.pipController?.isPictureInPictureActive == true {
++                    self.clearSpeedPauseReason(source: "系统PiP冲突解除")
++                    self.resumeRefreshEngineAfterPiPConflictIfNeeded()
++                    KeepAliveNotificationTester.cancelPiPStoppedNotifications(reason: "PiP冲突已解除")
++                }
++
+                 if self.shouldUsePlayerLayerPiPCompatibility {
+                     self.updateDiagnosticsPiPState()
++                    self.updateHomeView(animated: true)
+                     return
+                 }
+                 // VideoCall PiP has no backing media/audio pipeline. Dock/undock should
+@@ -2914,10 +3305,17 @@
+                 self.stopDisplayLinks()
+                 self.stopClockTimer()
+                 self.updateDiagnosticsPiPState()
++                self.updateHomeView(animated: true)
+             }
+         }
+     }
+ 
++    private func resumeRefreshEngineAfterPiPConflictIfNeeded() {
++        guard wantsPiPActive, pipController?.isPictureInPictureActive == true else { return }
++        RefreshRateController.shared.setEngineEnabled(true)
++        updateAutoHiddenOverheadState(reason: "PiP冲突解除")
++    }
++
+     private func scheduleAutoHideAfterStablePiPStartIfNeeded(reason: String) {
+         guard shouldAutoHideAfterNextStart else { return }
+         pipTasks.cancel(.autoHideAfterStart)
+@@ -2930,7 +3328,12 @@
+             guard !controller.isPictureInPictureSuspended else { return }
+             self.shouldAutoHideAfterNextStart = false
+             AppDebugLogger.log("Stable-post-start auto-hide committed: \(reason)")
+-            self.beginTransientOneTapHide(source: "启动并隐藏")
++            if let calibration = self.storedSideStashCalibration {
++                self.performCalibratedSideStash(calibration, source: "启动并隐藏")
++            } else {
++                self.pendingSideStashCalibrationAfterStart = false
++                self.presentSideStashCalibrationPrompt(source: "启动并隐藏", startPiPIfNeeded: false)
++            }
+             self.configureRunningText()
+         }
+     }
+@@ -4175,6 +4578,9 @@
+         pipTasks.cancel(.playerLayerGeometryPreview)
+         pendingPlayerLayerPreviewHeight = nil
+         lastPlayerLayerPrefetchHeight = nil
++        if persistPreference, isCalibratedSideStashActive {
++            isCalibratedSideStashActive = false
++        }
+         pipHeight = clampedHeight(height)
+         isCompactPiPStyle = abs(clampedPiPHeight - currentCompactPiPHeight) < 0.5
+ 
+@@ -4614,6 +5020,10 @@
+     func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+         pipLifecycle.didStart()
+         pipTasks.cancel(.startRetry)
++        pipStopConflictLikely = false
++        isCalibratedSideStashActive = false
++        isReplayingCalibratedSideStash = false
++        clearSpeedPauseReason(source: "PiP重新启动成功")
+         pipTasks.cancel(.startTimeout)
+         wantsPiPActive = true
+         RefreshRateController.shared.setEngineEnabled(true)
+@@ -4635,6 +5045,14 @@
+         beginPiPRuntimeSession()
+         pipLifecycle.setSuspendedAtSide(pictureInPictureController.isPictureInPictureSuspended)
+         scheduleAutoHideAfterStablePiPStartIfNeeded(reason: "PiP启动稳定窗口")
++        if pendingSideStashCalibrationAfterStart {
++            pendingSideStashCalibrationAfterStart = false
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
++                guard let self, self.pipController?.isPictureInPictureActive == true else { return }
++                self.beginSideStashCalibration(source: "首次一键隐藏校准")
++            }
++        }
++        schedulePiPConflictNotificationPermissionIfNeeded(after: 1.5)
+         updateContinuousDiagnosticsForStableVideoCall(reason: "PiP启动完成")
+         startDisplayLinks()
+         settlePlayerLayerPiPAfterStart()
+@@ -4694,6 +5112,10 @@
+             && !isStoppingPiP
+             && !isClosingPiPFromCustomContentTap
+             && pipTransitionExpectedActive != false
++        let stopWasExpectedActive = pipExpectedActiveBeforeStop == true
++        pipStopConflictLikely = stopWasExpectedActive
++            && (pictureInPictureController.isPictureInPictureSuspended
++                || !pictureInPictureController.isPictureInPicturePossible)
+         removeDirectCloseGestureForSystemPiPControls()
+         cancelDelayedPiPHideCountdown(reason: "悬浮窗即将停止")
+         pipTasks.cancelAll()
+@@ -4733,6 +5155,10 @@
+         pipExpectedActiveBeforeStop = nil
+         // willStop 中已捕获“是否为用户主动停止”，这里仅负责收敛最终状态。
+         let wasExpectedStop = !expectedActiveBeforeStop || didRecoverStalePiPStop
++        let likelyPiPConflict = !wasExpectedStop && (
++            pipStopConflictLikely
++                || pictureInPictureController.isPictureInPictureSuspended
++        )
+         let stoppedMode = currentKeepAlivePolicy.diagnosticsName
+         let stoppedBackend = currentPiPBackend
+         detachLegacyCustomViewIfNeeded()
+@@ -4766,9 +5192,27 @@
+         PowerUsageLogger.markPiPStop()
+         PowerUsageLogger.markKeepAliveStop()
+         KeepAliveLogger.markPiPStopped(reason: "PiP did stop")
+-        if !wasExpectedStop, !shouldSuppressStopNotification {
+-            KeepAliveNotificationTester.schedulePiPStoppedNotification(mode: stoppedMode, reason: "悬浮窗异常停止")
++        if wasExpectedStop {
++            clearSpeedPauseReason(source: "用户或系统预期停止")
++        } else if likelyPiPConflict {
++            setSpeedPauseReason(.pictureInPictureConflict, source: "PiP被其他画中画占用或顶替")
++            if !shouldSuppressStopNotification {
++                KeepAliveNotificationTester.schedulePiPConflictNotification(
++                    mode: stoppedMode,
++                    reason: "检测到其他画中画占用或顶替 Speed 悬浮窗"
++                )
++            }
++        } else {
++            setSpeedPauseReason(.unexpectedPiPStop, source: "PiP异常停止")
++            if !shouldSuppressStopNotification {
++                KeepAliveNotificationTester.schedulePiPStoppedNotification(mode: stoppedMode, reason: "悬浮窗异常停止")
++            }
+         }
++        pipStopConflictLikely = false
++        isCalibratedSideStashActive = false
++        isReplayingCalibratedSideStash = false
++        sideStashCalibrationTimer?.invalidate()
++        sideStashCalibrationTimer = nil
+         endBackgroundTask()
+         updateDisplaySleepDiagnostics(reason: "PiP停止完成", shouldLog: true)
+         updateDiagnosticsPiPState()
