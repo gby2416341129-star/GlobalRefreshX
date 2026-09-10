@@ -13,7 +13,7 @@ permissions:
 
 env:
   BASELINE_SOURCE: Speed-2.6.2-Compatibility-Geometry-Core-Source.tar.gz
-  PATCH_SHA256: 35db305dee0d92c5c2769806cd804a029df935c5fbae4bee09ba84a9a32a8914
+  PATCH_SHA256: fe97699fd9b454ce6733ddbd63baed1fae75a3c31de095cab961d5881237e40e
 
 jobs:
   build:
@@ -111,5 +111,5 @@ jobs:
           gh release edit dev-latest \
             --target "$GITHUB_SHA" \
             --title 'Speed 2.6.3 Core Logic Cleanup' \
-            --notes 'Core stability cleanup before Adaptive Engine work. Separates user mode, PiP backend, refresh policy, and fallback state; gates the app-level CADisplayLink to an active Speed session; fixes Auto fallback stop ordering and rebuild behavior; isolates Standard and Compatibility remembered heights; fixes 1pt Compatibility hidden semantics; makes one-tap hide transient without overwriting remembered height; fixes height input double-commit and custom style/default-height mismatch; removes guaranteed 120Hz wording; caches Performance Lab percentile work; and quarantines the known-crashing UIUpdateLink/Hybrid runtime in this stable build. The Start & Hide auto-lock path now explicitly restores system auto-lock eligibility after hidden geometry commits, releases display-sleep/backgrounding/audio/background-task blockers, and retains the lightweight hidden state. No new compatibility videos or per-frame heavy work are added.' \
+            --notes 'Core stability cleanup before Adaptive Engine work. Separates user mode, PiP backend, refresh policy, and fallback state; gates the app-level CADisplayLink to an active Speed session; fixes Auto fallback stop ordering and rebuild behavior; isolates Standard and Compatibility remembered heights; fixes 1pt Compatibility hidden semantics; makes one-tap hide transient without overwriting remembered height; fixes height input double-commit and custom style/default-height mismatch; removes guaranteed 120Hz wording; caches Performance Lab percentile work; and quarantines the known-crashing UIUpdateLink/Hybrid runtime in this stable build. The Start & Hide auto-lock path explicitly restores system auto-lock eligibility after hidden geometry commits, releases display-sleep/audio/background-task blockers, and retains the lightweight hidden state. No new compatibility videos or per-frame heavy work are added.' \
             --prerelease
