@@ -37,7 +37,7 @@ jobs:
         run: |
           set -euo pipefail
           base64 -D < "$GITHUB_WORKSPACE/patches/speed306-flight-recorder.b64" | gunzip > "$RUNNER_TEMP/speed306.patch"
-          test "$(shasum -a 256 "$RUNNER_TEMP/speed306.patch" | awk '{print $1}')" = "11f87acf30530a9ee14bf47f221cc98c95d4c39daaf0faefee2e1259fc3e366c"
+          test "$(shasum -a 256 "$RUNNER_TEMP/speed306.patch" | awk '{print $1}')" = "b2bbbff8c29b0914ce6a46eea354674ac3910ca697d89740fc3dad563b196574"
           cd "$PROJECT_ROOT"
           patch --dry-run -p1 < "$RUNNER_TEMP/speed306.patch"
           patch -p1 < "$RUNNER_TEMP/speed306.patch"
