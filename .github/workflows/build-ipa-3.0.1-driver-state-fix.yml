@@ -1,0 +1,117 @@
+name: Build Speed 3.0.1 Driver State Fix
+
+on:
+  push:
+    branches: [speed-2.6-dev]
+    paths:
+      - '.github/workflows/build-ipa-3.0.1-driver-state-fix.yml'
+      - 'scripts/speed301/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  BASELINE_SOURCE: Speed-3.0.0-Adaptive-Engine-Source.tar.gz
+  PATCH_SHA256: d9af85c7754ecd265471bdb88a5602ac12b6215befdf2e708cf49662065b4296
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Check out Speed development
+        uses: actions/checkout@v4
+        with:
+          ref: speed-2.6-dev
+
+      - name: Download Speed 3.0.0 source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE/source"
+          gh release download dev-latest --pattern "$BASELINE_SOURCE" --dir "$GITHUB_WORKSPACE/baseline"
+          tar -xzf "$GITHUB_WORKSPACE/baseline/$BASELINE_SOURCE" -C "$GITHUB_WORKSPACE/source"
+          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/source" >> "$GITHUB_ENV"
+
+      - name: Apply Speed 3.0.1 driver-state fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat "$GITHUB_WORKSPACE"/scripts/speed301/part*.b64 | base64 -D | gunzip > "$RUNNER_TEMP/speed301.patch"
+          actual="$(shasum -a 256 "$RUNNER_TEMP/speed301.patch" | awk '{print $1}')"
+          test "$actual" = "$PATCH_SHA256"
+          cd "$PROJECT_ROOT"
+          patch --dry-run -p1 < "$RUNNER_TEMP/speed301.patch"
+          patch -p1 < "$RUNNER_TEMP/speed301.patch"
+          rm -rf "$PROJECT_ROOT/build" "$PROJECT_ROOT/dist"
+
+      - name: Select Xcode 26+
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/select_xcode_26.sh"
+
+      - name: Verify integration
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/verify_project.sh"
+
+      - name: Build unsigned IPA
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/build_unsigned_ipa.sh"
+
+      - name: Require warning-clean Swift build
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$PROJECT_ROOT/build/diagnostics/xcodebuild.log"
+          test -f "$log"
+          if grep -E '\.swift:[0-9]+:[0-9]+: warning:' "$log"; then
+            echo 'Swift warnings are not allowed in Speed 3.0.1.' >&2
+            exit 1
+          fi
+
+      - name: Validate and package outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          ipa="$GITHUB_WORKSPACE/out/Speed-3.0.1-Driver-State-Foreground-Restore-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-3.0.1-Driver-State-Foreground-Restore-Source.tar.gz"
+          cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" "$ipa"
+          unzip -t "$ipa"
+          unzip -l "$ipa" | grep -q 'Payload/Speed.app/PlugIns/SpeedControls.appex/SpeedControls$'
+          raw_count="$(unzip -l "$ipa" | grep -E 'Payload/Speed.app/CompatibilityMedia/h[0-9]{3}\.mov$' | wc -l | tr -d ' ')"
+          compact_count="$(unzip -l "$ipa" | grep -E 'Payload/Speed.app/CompatibilityMedia/h[0-9]{3}\.spm$' | wc -l | tr -d ' ')"
+          test "$raw_count" -eq 3
+          test "$compact_count" -eq 217
+          python3 -c "import plistlib,zipfile; z=zipfile.ZipFile('$ipa'); a=plistlib.loads(z.read('Payload/Speed.app/Info.plist')); e=plistlib.loads(z.read('Payload/Speed.app/PlugIns/SpeedControls.appex/Info.plist')); assert a['CFBundleShortVersionString']=='3.0.1' and a['CFBundleVersion']=='2026091105'; assert e['CFBundleShortVersionString']=='3.0.1' and e['CFBundleVersion']=='2026091105'; print('Validated Speed 3.0.1 app + extension')"
+          shasum -a 256 "$ipa" > "$ipa.sha256"
+          tar --exclude='./build' --exclude='./dist' -czf "$src" -C "$PROJECT_ROOT" .
+          shasum -a 256 "$src" > "$src.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-3.0.1-Driver-State-Foreground-Restore
+          path: |
+            out/Speed-3.0.1-Driver-State-Foreground-Restore-unsigned.ipa
+            out/Speed-3.0.1-Driver-State-Foreground-Restore-unsigned.ipa.sha256
+            out/Speed-3.0.1-Driver-State-Foreground-Restore-Source.tar.gz
+            out/Speed-3.0.1-Driver-State-Foreground-Restore-Source.tar.gz.sha256
+          if-no-files-found: error
+
+      - name: Publish Speed 3.0.1 test assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa="$GITHUB_WORKSPACE/out/Speed-3.0.1-Driver-State-Foreground-Restore-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-3.0.1-Driver-State-Foreground-Restore-Source.tar.gz"
+          gh release upload dev-latest "$ipa" "$src" --clobber
+          gh release edit dev-latest \
+            --target "$GITHUB_SHA" \
+            --title 'Speed 3.0.1 Driver State + Foreground Restore' \
+            --notes 'Fixes two Speed 3.0 state-model bugs without changing the refresh architecture. Requested driver, effective driver, control source, and fallback reason are now separate. Stable/Gaming/Adaptive profiles no longer leave a Laboratory button visually claiming control; Laboratory keeps the last custom choice only, and tapping any driver explicitly switches to Custom and hands control to Laboratory. UIUpdateLink/Hybrid keep their requested driver while App Switcher/backgrounding temporarily falls back to CADisplayLink, then perform bounded foreground rebind retries so the requested driver is restored after UIKit reattaches the visible view. Hybrid is reported as CADisplayLink if its UIUpdateLink half is unavailable. Preserves Adaptive Engine calibration, Crash Shield, Cadence Recovery, all Lab experiments, one-tap hide fixes, PiP conflict handling, and 3 MOV + 217 SPM compatibility media.' \
+            --prerelease
