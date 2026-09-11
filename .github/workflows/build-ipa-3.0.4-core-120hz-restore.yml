@@ -1,0 +1,132 @@
+name: Build Speed 3.0.4 Core 120Hz Restore
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-ipa-3.0.4-core-120hz-restore.yml'
+      - 'patches/speed303-audit.part*'
+      - 'patches/speed304-core-restore.part*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  BASELINE_SOURCE: Speed-3.0.2-Background-Driver-State-Fix-Source.tar.gz
+  BASELINE_SHA256: d7245a64331d841e1c1437a9ff68884f04e2286df6ea3dabb400172e6c394db3
+  PATCH303_SHA256: 22b322960a6b57021f495a92d642cd3b4b82d02feafd42c21712f143359c18bf
+  PATCH304_SHA256: 2283b7ade4a5ea862f49c0fb35049dfe2752832a9c7e26cf618b0dc22d4b97ad
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore pinned Speed 3.0.2 baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/source" "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE/out"
+          mkdir -p "$GITHUB_WORKSPACE/source" "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE/out"
+          gh release download dev-latest --pattern "$BASELINE_SOURCE" --dir "$GITHUB_WORKSPACE/baseline"
+          echo "$BASELINE_SHA256  $GITHUB_WORKSPACE/baseline/$BASELINE_SOURCE" | shasum -a 256 -c -
+          tar -xzf "$GITHUB_WORKSPACE/baseline/$BASELINE_SOURCE" -C "$GITHUB_WORKSPACE/source"
+          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/source" >> "$GITHUB_ENV"
+
+      - name: Apply audited 3.0.3 and core 3.0.4 patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat "$GITHUB_WORKSPACE"/patches/speed303-audit.part* > "$RUNNER_TEMP/speed303.patch.gz.b64"
+          base64 -D < "$RUNNER_TEMP/speed303.patch.gz.b64" | gunzip > "$RUNNER_TEMP/speed303.patch"
+          echo "$PATCH303_SHA256  $RUNNER_TEMP/speed303.patch" | shasum -a 256 -c -
+
+          cat "$GITHUB_WORKSPACE"/patches/speed304-core-restore.part* > "$RUNNER_TEMP/speed304.patch.gz.b64"
+          base64 -D < "$RUNNER_TEMP/speed304.patch.gz.b64" | gunzip > "$RUNNER_TEMP/speed304.patch"
+          echo "$PATCH304_SHA256  $RUNNER_TEMP/speed304.patch" | shasum -a 256 -c -
+
+          cd "$PROJECT_ROOT"
+          patch --dry-run -p1 < "$RUNNER_TEMP/speed303.patch"
+          patch -p1 < "$RUNNER_TEMP/speed303.patch"
+          patch --dry-run -p1 < "$RUNNER_TEMP/speed304.patch"
+          patch -p1 < "$RUNNER_TEMP/speed304.patch"
+          chmod +x scripts/*.sh
+
+      - name: Select Xcode 26+
+        shell: bash
+        run: bash "$PROJECT_ROOT/scripts/select_xcode_26.sh"
+
+      - name: Execute core regressions
+        shell: bash
+        run: bash "$PROJECT_ROOT/scripts/test_core.sh"
+
+      - name: Verify integrated project
+        shell: bash
+        run: bash "$PROJECT_ROOT/scripts/verify_project.sh"
+
+      - name: Build unsigned IPA
+        shell: bash
+        run: bash "$PROJECT_ROOT/scripts/build_unsigned_ipa.sh"
+
+      - name: Require warning-clean Swift compilation
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$PROJECT_ROOT/build/diagnostics/xcodebuild.log"
+          test -f "$log"
+          if grep -E '\.swift:[0-9]+:[0-9]+: warning:' "$log"; then
+            echo 'Swift source warnings are not allowed in Speed 3.0.4.' >&2
+            exit 1
+          fi
+
+      - name: Validate actual Speed 3.0.4 IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$PROJECT_ROOT/scripts/validate_ipa.py" "$PROJECT_ROOT/dist/Speed-unsigned.ipa"
+
+      - name: Package release outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa="$GITHUB_WORKSPACE/out/Speed-3.0.4-Core-120Hz-Restore-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-3.0.4-Core-120Hz-Restore-Source.tar.gz"
+          cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" "$ipa"
+          unzip -t "$ipa"
+          shasum -a 256 "$ipa" > "$ipa.sha256"
+          tar --exclude='./build' --exclude='./dist' -czf "$src" -C "$PROJECT_ROOT" .
+          shasum -a 256 "$src" > "$src.sha256"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-3.0.4-Core-120Hz-Restore
+          path: |
+            out/Speed-3.0.4-Core-120Hz-Restore-unsigned.ipa
+            out/Speed-3.0.4-Core-120Hz-Restore-unsigned.ipa.sha256
+            out/Speed-3.0.4-Core-120Hz-Restore-Source.tar.gz
+            out/Speed-3.0.4-Core-120Hz-Restore-Source.tar.gz.sha256
+            source/build/diagnostics/xcodebuild.log
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish rolling prerelease assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa="$GITHUB_WORKSPACE/out/Speed-3.0.4-Core-120Hz-Restore-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-3.0.4-Core-120Hz-Restore-Source.tar.gz"
+          gh release upload dev-latest "$ipa" "$src" --clobber
+          gh release edit dev-latest \
+            --target "$GITHUB_SHA" \
+            --title "Speed 3.0.4 Core 120Hz Restore" \
+            --notes "Restores the persistent hard-max CADisplayLink anchor when Speed leaves foreground, fixing the 3.0.2/3.0.3 regression where enabling Speed could feel identical to disabling it outside the app. UIUpdateLink remains foreground-scoped and is restored on return. Keeps the 3.0.3 audit fixes, Adaptive Engine, Crash Shield, Laboratory features, PiP compatibility media, and existing UI. Built from pinned Speed 3.0.2 source plus verified 3.0.3 and 3.0.4 patches. Unsigned IPA: sign before installation." \
+            --prerelease
