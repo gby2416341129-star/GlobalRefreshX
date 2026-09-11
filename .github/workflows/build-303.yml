@@ -1,0 +1,48 @@
+name: Build Speed 3.0.3 audited candidate
+on:
+  push:
+    branches: [speed-3.0.3-audit]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore pinned baseline and apply audited changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir baseline source
+          gh release download dev-latest --pattern Speed-3.0.2-Background-Driver-State-Fix-Source.tar.gz --dir baseline
+          echo "d7245a64331d841e1c1437a9ff68884f04e2286df6ea3dabb400172e6c394db3  baseline/Speed-3.0.2-Background-Driver-State-Fix-Source.tar.gz" | shasum -a 256 -c -
+          tar -xzf baseline/Speed-3.0.2-Background-Driver-State-Fix-Source.tar.gz -C source
+          base64 -D < speed303.patch.gz.b64 | gunzip > speed303.patch
+          echo "80b9202c84f0ce5d81b47db440a2a6e236e89a4e3f75974586a54552dbe899ba  speed303.patch" | shasum -a 256 -c -
+          cd source
+          patch --dry-run -p1 < ../speed303.patch
+          patch -p1 < ../speed303.patch
+          chmod +x scripts/*.sh
+      - name: Select Xcode 26+
+        run: bash source/scripts/select_xcode_26.sh
+      - name: Execute core regressions
+        run: bash source/scripts/test_core.sh
+      - name: Build Release IPA
+        run: bash source/scripts/build_unsigned_ipa.sh
+      - name: Require warning-clean Swift compilation
+        run: |
+          if grep -E '\.swift:[0-9]+:[0-9]+: warning:' source/build/diagnostics/xcodebuild.log; then exit 1; fi
+      - name: Validate actual IPA
+        run: python3 source/scripts/validate_ipa.py source/dist/Speed-unsigned.ipa
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Speed-3.0.3-Audit-Fix
+          path: |
+            source/dist/Speed-unsigned.ipa
+            source/build/diagnostics/xcodebuild.log
+            source/build/diagnostics/Speed.xcresult
+          if-no-files-found: warn
