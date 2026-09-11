@@ -73,7 +73,7 @@ jobs:
 
       - name: Validate actual Speed 3.0.5 IPA
         shell: bash
-        run: "$PROJECT_ROOT/scripts/validate_ipa.py $PROJECT_ROOT/dist/Speed-unsigned.ipa"
+        run: python3 "$PROJECT_ROOT/scripts/validate_ipa.py" "$PROJECT_ROOT/dist/Speed-unsigned.ipa"
 
       - name: Package release outputs
         shell: bash
