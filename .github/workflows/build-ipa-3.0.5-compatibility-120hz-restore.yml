@@ -1,0 +1,111 @@
+name: Build Speed 3.0.5 Compatibility 120Hz Restore
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-ipa-3.0.5-compatibility-120hz-restore.yml'
+      - 'patches/speed305-compat-120hz.part*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore Speed 3.0.4 baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE/source"
+          gh release download dev-latest --pattern 'Speed-3.0.4-Core-120Hz-Restore-Source.tar.gz' --dir "$GITHUB_WORKSPACE/baseline"
+          baseline="$GITHUB_WORKSPACE/baseline/Speed-3.0.4-Core-120Hz-Restore-Source.tar.gz"
+          test "$(shasum -a 256 "$baseline" | awk '{print $1}')" = "525d133032aa4c0bd7db15e6c3670e82eeb835b08793b6afb4f18c6a4dd63447"
+          tar -xzf "$baseline" -C "$GITHUB_WORKSPACE/source"
+          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/source" >> "$GITHUB_ENV"
+
+      - name: Apply Speed 3.0.5 compatibility 120Hz fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat "$GITHUB_WORKSPACE"/patches/speed305-compat-120hz.part* > "$RUNNER_TEMP/speed305.patch.gz.b64"
+          base64 -D < "$RUNNER_TEMP/speed305.patch.gz.b64" | gunzip > "$RUNNER_TEMP/speed305.patch"
+          test "$(shasum -a 256 "$RUNNER_TEMP/speed305.patch" | awk '{print $1}')" = "d2cbc8936367b4823d9cab7fdbfb27c3be1d4ae18e88ecc3d76ff2df36b804cb"
+          cd "$PROJECT_ROOT"
+          patch --dry-run -p1 < "$RUNNER_TEMP/speed305.patch"
+          patch -p1 < "$RUNNER_TEMP/speed305.patch"
+          rm -rf build dist
+
+      - name: Select Xcode 26+
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/select_xcode_26.sh"
+
+      - name: Execute core regressions
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/test_core.sh"
+
+      - name: Verify integrated project
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/verify_project.sh"
+
+      - name: Build unsigned IPA
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/build_unsigned_ipa.sh"
+
+      - name: Require warning-clean Swift compilation
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$PROJECT_ROOT/build/diagnostics/xcodebuild.log"
+          test -f "$log"
+          if grep -E '\.swift:[0-9]+:[0-9]+: warning:' "$log"; then
+            echo 'Swift source warnings are not allowed in Speed 3.0.5.' >&2
+            exit 1
+          fi
+
+      - name: Validate actual Speed 3.0.5 IPA
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/validate_ipa.py $PROJECT_ROOT/dist/Speed-unsigned.ipa"
+
+      - name: Package release outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          ipa="$GITHUB_WORKSPACE/out/Speed-3.0.5-Compatibility-120Hz-Restore-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-3.0.5-Compatibility-120Hz-Restore-Source.tar.gz"
+          cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" "$ipa"
+          shasum -a 256 "$ipa" > "$ipa.sha256"
+          tar --exclude='./build' --exclude='./dist' -czf "$src" -C "$PROJECT_ROOT" .
+          shasum -a 256 "$src" > "$src.sha256"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-3.0.5-Compatibility-120Hz-Restore
+          path: |
+            out/Speed-3.0.5-Compatibility-120Hz-Restore-unsigned.ipa
+            out/Speed-3.0.5-Compatibility-120Hz-Restore-unsigned.ipa.sha256
+            out/Speed-3.0.5-Compatibility-120Hz-Restore-Source.tar.gz
+            out/Speed-3.0.5-Compatibility-120Hz-Restore-Source.tar.gz.sha256
+            source/build/diagnostics/xcodebuild.log
+          if-no-files-found: error
+
+      - name: Publish rolling prerelease assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa="$GITHUB_WORKSPACE/out/Speed-3.0.5-Compatibility-120Hz-Restore-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-3.0.5-Compatibility-120Hz-Restore-Source.tar.gz"
+          gh release upload dev-latest "$ipa" "$src" --clobber
+          gh release edit dev-latest --target "$GITHUB_SHA" --title "Speed 3.0.5 Compatibility 120Hz Restore" --notes "Fixes Compatibility mode feeling identical to Speed-off by replacing its passive refresh policy with a conservative real hard-max CADisplayLink 120Hz anchor. Compatibility keeps its PiP, 1pt hide and geometry behavior, while UIUpdateLink/Hybrid remain disabled on that route to reduce compatibility risk. Standard mode retains the 3.0.4 persistent cross-app anchor. Unsigned IPA: sign before installation." --prerelease
