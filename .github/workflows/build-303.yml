@@ -21,7 +21,7 @@ jobs:
           echo "d7245a64331d841e1c1437a9ff68884f04e2286df6ea3dabb400172e6c394db3  baseline/Speed-3.0.2-Background-Driver-State-Fix-Source.tar.gz" | shasum -a 256 -c -
           tar -xzf baseline/Speed-3.0.2-Background-Driver-State-Fix-Source.tar.gz -C source
           base64 -D < speed303.patch.gz.b64 | gunzip > speed303.patch
-          echo "80b9202c84f0ce5d81b47db440a2a6e236e89a4e3f75974586a54552dbe899ba  speed303.patch" | shasum -a 256 -c -
+          echo "22b322960a6b57021f495a92d642cd3b4b82d02feafd42c21712f143359c18bf  speed303.patch" | shasum -a 256 -c -
           cd source
           patch --dry-run -p1 < ../speed303.patch
           patch -p1 < ../speed303.patch
