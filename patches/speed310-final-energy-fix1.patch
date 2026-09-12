@@ -1,0 +1,47 @@
+diff -ruN speed310final_before_fix1/pip_swift/pip_swift/AppDebugLogger.swift speed310final/pip_swift/pip_swift/AppDebugLogger.swift
+--- speed310final_before_fix1/pip_swift/pip_swift/AppDebugLogger.swift	2026-09-12 10:06:04.259595164 +0000
++++ speed310final/pip_swift/pip_swift/AppDebugLogger.swift	2026-09-12 10:16:38.473257199 +0000
+@@ -1637,7 +1637,8 @@
+         geometryRoute: String,
+         refreshPolicy: String,
+         playerLayerPlaybackRate: Double?,
+-        playerLayerMediaProfile: String
++        playerLayerMediaProfile: String,
++        compositorAnchorExperimentEnabled: Bool
+     ) throws -> URL {
+         guard hasCapturedSession, sessionStartedAt > 0 else {
+             throw RecorderError.noCapturedSession
+@@ -1769,7 +1770,7 @@
+                 runtimeState: snapshot.runtimeState.title,
+                 cadenceState: snapshot.cadenceState.rawValue,
+                 cadenceRecoveryBursts: snapshot.cadenceRecoveryBursts,
+-                compositorAnchorExperimentEnabled: RefreshRateController.shared.compositorAnchorExperimentEnabled
++                compositorAnchorExperimentEnabled: compositorAnchorExperimentEnabled
+             ),
+             summary: summary,
+             events: events,
+diff -ruN speed310final_before_fix1/pip_swift/pip_swift/RefreshRateController.swift speed310final/pip_swift/pip_swift/RefreshRateController.swift
+--- speed310final_before_fix1/pip_swift/pip_swift/RefreshRateController.swift	2026-09-12 10:06:41.784611423 +0000
++++ speed310final/pip_swift/pip_swift/RefreshRateController.swift	2026-09-12 10:16:38.472766496 +0000
+@@ -245,6 +245,8 @@
+             return effectiveDriver.title
+         case .backgroundHardMaxAnchor:
+             return L10n.text("CAD 120Hz 锚点", "CAD 120Hz anchor")
++        case .backgroundCompositorAnchor:
++            return L10n.text("CA 120Hz 实验锚点", "CA 120Hz experimental anchor")
+         case .restoringForeground:
+             return L10n.text("恢复中", "Restoring")
+         }
+diff -ruN speed310final_before_fix1/pip_swift/pip_swift/ViewController.swift speed310final/pip_swift/pip_swift/ViewController.swift
+--- speed310final_before_fix1/pip_swift/pip_swift/ViewController.swift	2026-09-12 10:04:58.888812614 +0000
++++ speed310final/pip_swift/pip_swift/ViewController.swift	2026-09-12 10:16:38.474281658 +0000
+@@ -1072,7 +1072,8 @@
+                 geometryRoute: flightRecorderGeometryRouteName,
+                 refreshPolicy: flightRecorderRefreshPolicyName,
+                 playerLayerPlaybackRate: flightRecorderPlayerLayerPlaybackRate,
+-                playerLayerMediaProfile: flightRecorderPlayerLayerMediaProfile
++                playerLayerMediaProfile: flightRecorderPlayerLayerMediaProfile,
++                compositorAnchorExperimentEnabled: RefreshRateController.shared.compositorAnchorExperimentEnabled
+             )
+             let activity = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+             if let popover = activity.popoverPresentationController {
