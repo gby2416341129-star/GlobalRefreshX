@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/build-ipa-3.1.0-final-energy.yml'
       - 'patches/speed310-final-energy.part*'
+      - 'patches/speed310-final-energy-fix1.patch'
   workflow_dispatch:
 
 permissions:
@@ -45,6 +46,8 @@ jobs:
           cd "$PROJECT_ROOT"
           patch --dry-run -p1 < "$RUNNER_TEMP/speed310.patch"
           patch -p1 < "$RUNNER_TEMP/speed310.patch"
+          patch --dry-run -p1 < "$GITHUB_WORKSPACE/patches/speed310-final-energy-fix1.patch"
+          patch -p1 < "$GITHUB_WORKSPACE/patches/speed310-final-energy-fix1.patch"
           rm -rf build dist
 
       - name: Select Xcode 26+
