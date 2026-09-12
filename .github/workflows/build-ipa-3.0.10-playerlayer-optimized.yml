@@ -36,7 +36,7 @@ jobs:
         run: |
           set -euo pipefail
           base64 -D < "$GITHUB_WORKSPACE/patches/speed310-playerlayer-optimized.b64" | gunzip > "$RUNNER_TEMP/speed310.patch"
-          test "$(shasum -a 256 "$RUNNER_TEMP/speed310.patch" | awk '{print $1}')" = "950ed1266533f5a998baed943175f17ada438378635683e4273a09f54f98f9a8"
+          test "$(shasum -a 256 "$RUNNER_TEMP/speed310.patch" | awk '{print $1}')" = "17f91f1f4e5c6a1d9d39b1f3c3d300d6469cae628caa67aa3f93b82b657038d1"
           cd "$PROJECT_ROOT"
           patch --dry-run -p1 < "$RUNNER_TEMP/speed310.patch"
           patch -p1 < "$RUNNER_TEMP/speed310.patch"
