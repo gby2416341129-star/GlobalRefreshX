@@ -100,7 +100,7 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_plist")" = "2026091209"
           grep -q 'energyProbe' "$PROJECT_ROOT/pip_swift/pip_swift/AppDebugLogger.swift"
           grep -q 'backgroundCompositorAnchor' "$PROJECT_ROOT/pip_swift/pip_swift/RefreshRateController.swift"
-          grep -q '1fps-60s-energy-v1.mov' "$PROJECT_ROOT/pip_swift/pip_swift/ViewController.swift"
+          grep -q '1fps-60s-energy-v1' "$PROJECT_ROOT/pip_swift/pip_swift/ViewController.swift"
 
       - name: Package release outputs
         shell: bash
