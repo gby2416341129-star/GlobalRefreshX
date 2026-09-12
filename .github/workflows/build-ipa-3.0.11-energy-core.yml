@@ -1,0 +1,115 @@
+name: Build Speed 3.0.11 Energy Core
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-ipa-3.0.11-energy-core.yml'
+      - 'patches/speed311-energy-core.b64'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore Speed 3.0.10 baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE/source"
+          gh release download dev-latest --pattern 'Speed-3.0.10-PlayerLayer-Optimized-Source.tar.gz' --dir "$GITHUB_WORKSPACE/baseline"
+          tar -xzf "$GITHUB_WORKSPACE/baseline/Speed-3.0.10-PlayerLayer-Optimized-Source.tar.gz" -C "$GITHUB_WORKSPACE/source"
+          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/source" >> "$GITHUB_ENV"
+
+      - name: Apply Speed 3.0.11 Energy Core patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -D < "$GITHUB_WORKSPACE/patches/speed311-energy-core.b64" | gunzip > "$RUNNER_TEMP/speed311.patch"
+          test "$(shasum -a 256 "$RUNNER_TEMP/speed311.patch" | awk '{print $1}')" = "58c6c02d8ebef05ccbee7f0e1434216771466f10bdc2b359520649716018ab2b"
+          cd "$PROJECT_ROOT"
+          patch --dry-run -p1 < "$RUNNER_TEMP/speed311.patch"
+          patch -p1 < "$RUNNER_TEMP/speed311.patch"
+          rm -rf build dist
+
+      - name: Select Xcode 26+
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/select_xcode_26.sh"
+
+      - name: Parse modified Swift sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -frontend -parse "$PROJECT_ROOT/pip_swift/pip_swift/RefreshRateController.swift"
+          swiftc -frontend -parse "$PROJECT_ROOT/pip_swift/pip_swift/AppDebugLogger.swift"
+
+      - name: Execute core regressions
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/test_core.sh"
+
+      - name: Verify integrated project
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/verify_project.sh"
+
+      - name: Build unsigned IPA
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/build_unsigned_ipa.sh"
+
+      - name: Require warning-clean Swift compilation
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$PROJECT_ROOT/build/diagnostics/xcodebuild.log"
+          test -f "$log"
+          if grep -E '\.swift:[0-9]+:[0-9]+: warning:' "$log"; then
+            echo 'Swift source warnings are not allowed in Speed 3.0.11.' >&2
+            exit 1
+          fi
+
+      - name: Validate actual Speed 3.0.11 IPA
+        shell: bash
+        run: python3 "$PROJECT_ROOT/scripts/validate_ipa.py" "$PROJECT_ROOT/dist/Speed-unsigned.ipa"
+
+      - name: Package release outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          ipa="$GITHUB_WORKSPACE/out/Speed-3.0.11-Energy-Core-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-3.0.11-Energy-Core-Source.tar.gz"
+          cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" "$ipa"
+          shasum -a 256 "$ipa" > "$ipa.sha256"
+          tar --exclude='./build' --exclude='./dist' -czf "$src" -C "$PROJECT_ROOT" .
+          shasum -a 256 "$src" > "$src.sha256"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-3.0.11-Energy-Core
+          path: |
+            out/Speed-3.0.11-Energy-Core-unsigned.ipa
+            out/Speed-3.0.11-Energy-Core-unsigned.ipa.sha256
+            out/Speed-3.0.11-Energy-Core-Source.tar.gz
+            out/Speed-3.0.11-Energy-Core-Source.tar.gz.sha256
+            source/build/diagnostics/xcodebuild.log
+          if-no-files-found: error
+
+      - name: Publish rolling prerelease assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa="$GITHUB_WORKSPACE/out/Speed-3.0.11-Energy-Core-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-3.0.11-Energy-Core-Source.tar.gz"
+          gh release upload dev-latest "$ipa" "$src" --clobber
+          gh release edit dev-latest --target "$GITHUB_SHA" --title "Speed 3.0.11 Energy Core" --notes "Energy-focused build that preserves the existing 120 Hz hard-max anchor and PlayerLayer 0.25x media clock. Normal background CAD callbacks no longer build recorder strings, traverse UIKit scene state, or repeatedly reset cadence state when Flight Recorder is off. Flight Recorder's 36k frame ring is now allocated only when recording starts. Auto, Compatibility, PlayerLayer backend selection, refresh target, and PiP geometry behavior are otherwise unchanged." --prerelease
