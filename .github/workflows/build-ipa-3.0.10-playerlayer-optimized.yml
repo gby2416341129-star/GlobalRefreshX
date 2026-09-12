@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/build-ipa-3.0.10-playerlayer-optimized.yml'
-      - 'patches/speed310-playerlayer-optimized.b64'
+      - 'patches/speed310-playerlayer-optimized.part*'
   workflow_dispatch:
 
 permissions:
@@ -35,7 +35,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base64 -D < "$GITHUB_WORKSPACE/patches/speed310-playerlayer-optimized.b64" | gunzip > "$RUNNER_TEMP/speed310.patch"
+          cat \
+            "$GITHUB_WORKSPACE/patches/speed310-playerlayer-optimized.part01" \
+            "$GITHUB_WORKSPACE/patches/speed310-playerlayer-optimized.part02" \
+            "$GITHUB_WORKSPACE/patches/speed310-playerlayer-optimized.part03" \
+            "$GITHUB_WORKSPACE/patches/speed310-playerlayer-optimized.part04" \
+            "$GITHUB_WORKSPACE/patches/speed310-playerlayer-optimized.part05" \
+            | base64 -D | gunzip > "$RUNNER_TEMP/speed310.patch"
           test "$(shasum -a 256 "$RUNNER_TEMP/speed310.patch" | awk '{print $1}')" = "17f91f1f4e5c6a1d9d39b1f3c3d300d6469cae628caa67aa3f93b82b657038d1"
           cd "$PROJECT_ROOT"
           patch --dry-run -p1 < "$RUNNER_TEMP/speed310.patch"
