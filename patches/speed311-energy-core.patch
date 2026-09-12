@@ -1,0 +1,144 @@
+diff -ruN speed310base/pip_swift/pip_swift/AppDebugLogger.swift speed310src/pip_swift/pip_swift/AppDebugLogger.swift
+--- speed310base/pip_swift/pip_swift/AppDebugLogger.swift	2026-09-12 04:00:32.000000000 +0000
++++ speed310src/pip_swift/pip_swift/AppDebugLogger.swift	2026-09-12 04:54:28.616916336 +0000
+@@ -1331,7 +1331,9 @@
+ 
+     private let capacity = 36_000 // about five minutes at 120 Hz
+     private let eventCapacity = 4_000
+-    private var frames: [FrameSample?]
++    // Allocate the 36k-frame ring only when the user explicitly starts a recording.
++    // Normal Speed sessions therefore carry no recorder frame-buffer memory cost.
++    private var frames: [FrameSample?] = []
+     private var writeIndex = 0
+     private var storedFrames = 0
+     private var sequence: UInt64 = 0
+@@ -1349,7 +1351,6 @@
+     private var observerTokens: [NSObjectProtocol] = []
+ 
+     private init() {
+-        frames = Array(repeating: nil, count: capacity)
+         events.reserveCapacity(eventCapacity)
+         resourceSamples.reserveCapacity(600)
+     }
+diff -ruN speed310base/pip_swift/pip_swift/RefreshRateController.swift speed310src/pip_swift/pip_swift/RefreshRateController.swift
+--- speed310base/pip_swift/pip_swift/RefreshRateController.swift	2026-09-12 04:00:32.000000000 +0000
++++ speed310src/pip_swift/pip_swift/RefreshRateController.swift	2026-09-12 04:54:28.616527953 +0000
+@@ -627,6 +627,7 @@
+                 driverRuntimeState = .backgroundHardMaxAnchor
+             }
+             cadenceRecoveryState = .idle
++            resetCadenceContinuityForAnchorTransition()
+             clearCrashShieldPendingSession()
+             return
+         }
+@@ -649,6 +650,7 @@
+             stopUpdateLink()
+             startOrUpdateHardMaxDisplayLink()
+             cadenceRecoveryState = .idle
++            resetCadenceContinuityForAnchorTransition()
+             clearCrashShieldPendingSession()
+             return
+         }
+@@ -1331,20 +1333,33 @@
+         publishEngineChange()
+     }
+ 
++    @inline(__always)
++    private func resetCadenceContinuityForAnchorTransition() {
++        if lastDisplayTimestamp != 0 { lastDisplayTimestamp = 0 }
++        if cadenceSlowStreak != 0 { cadenceSlowStreak = 0 }
++    }
++
+     @objc private func step(_ link: CADisplayLink) {
+-        SpeedFlightRecorder.shared.recordFrame(
+-            link,
+-            requestedHz: Double(configuredFrameRate),
+-            runtimeState: driverRuntimeState.title
+-        )
+-        // Outside foreground the display link intentionally stays installed as the
+-        // hard-max anchor, but performs no cadence bookkeeping or other work.
+-        guard driverRuntimeState == .running,
+-              anchorView?.window?.windowScene?.activationState == .foregroundActive,
++        // Energy Core: keep the 120 Hz hard-max request intact, but make the callback
++        // essentially a no-op whenever Flight Recorder is off and Speed is not actively
++        // running its foreground cadence-recovery logic. Arguments are intentionally
++        // constructed only while recording; this avoids 120 localized String builds/sec.
++        let recorder = SpeedFlightRecorder.shared
++        if recorder.isRecording {
++            recorder.recordFrame(
++                link,
++                requestedHz: Double(configuredFrameRate),
++                runtimeState: driverRuntimeState.title
++            )
++        }
++
++        // Background / Compatibility / PlayerLayer anchors deliberately stay installed,
++        // but they do not need UIKit scene traversal or repeated state resets on every tick.
++        guard driverRuntimeState == .running else { return }
++        guard anchorView?.window?.windowScene?.activationState == .foregroundActive,
+               UIApplication.shared.applicationState == .active
+         else {
+-            lastDisplayTimestamp = 0
+-            cadenceSlowStreak = 0
++            resetCadenceContinuityForAnchorTransition()
+             return
+         }
+ 
+diff -ruN speed310base/pip_swift/pip_swift.xcodeproj/project.pbxproj speed310src/pip_swift/pip_swift.xcodeproj/project.pbxproj
+--- speed310base/pip_swift/pip_swift.xcodeproj/project.pbxproj	2026-09-12 04:00:32.000000000 +0000
++++ speed310src/pip_swift/pip_swift.xcodeproj/project.pbxproj	2026-09-12 04:54:28.617069783 +0000
+@@ -527,8 +527,8 @@
+ 				ENABLE_DEBUG_DYLIB = NO;
+ 				INFOPLIST_FILE = pip_swift/Info.plist;
+ 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+-				CURRENT_PROJECT_VERSION = 2026091207;
+-				MARKETING_VERSION = 3.0.10;
++				CURRENT_PROJECT_VERSION = 2026091208;
++				MARKETING_VERSION = 3.0.11;
+@@ -550,8 +550,8 @@
+ 				DEVELOPMENT_TEAM = "";
+ 				INFOPLIST_FILE = pip_swift/Info.plist;
+ 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+-				CURRENT_PROJECT_VERSION = 2026091207;
+-				MARKETING_VERSION = 3.0.10;
++				CURRENT_PROJECT_VERSION = 2026091208;
++				MARKETING_VERSION = 3.0.11;
+@@ -569,7 +569,7 @@
+ 			buildSettings = {
+ 				APPLICATION_EXTENSION_API_ONLY = YES;
+ 				CODE_SIGN_STYLE = Automatic;
+-				CURRENT_PROJECT_VERSION = 2026091207;
++				CURRENT_PROJECT_VERSION = 2026091208;
+@@ -579,7 +579,7 @@
+-				MARKETING_VERSION = 3.0.10;
++				MARKETING_VERSION = 3.0.11;
+@@ -593,7 +593,7 @@
+-				CURRENT_PROJECT_VERSION = 2026091207;
++				CURRENT_PROJECT_VERSION = 2026091208;
+@@ -603,7 +603,7 @@
+-				MARKETING_VERSION = 3.0.10;
++				MARKETING_VERSION = 3.0.11;
+diff -ruN speed310base/scripts/validate_ipa.py speed310src/scripts/validate_ipa.py
+--- speed310base/scripts/validate_ipa.py	2026-09-12 04:00:32.000000000 +0000
++++ speed310src/scripts/validate_ipa.py	2026-09-12 04:54:28.617128930 +0000
+@@ -8,8 +8,8 @@
+-        assert info['CFBundleShortVersionString']=='3.0.10', info
+-        assert info['CFBundleVersion']=='2026091207', info
++        assert info['CFBundleShortVersionString']=='3.0.11', info
++        assert info['CFBundleVersion']=='2026091208', info
+diff -ruN speed310base/scripts/verify_project.sh speed310src/scripts/verify_project.sh
+--- speed310base/scripts/verify_project.sh	2026-09-12 04:00:32.000000000 +0000
++++ speed310src/scripts/verify_project.sh	2026-09-12 04:54:59.643214076 +0000
+@@ -32,8 +32,8 @@
+-check_sh 'Speed version 3.0.10' "grep -q 'MARKETING_VERSION = 3.0.10' '$PROJECT'"
+-check_sh 'Speed build 2026091207' "grep -q 'CURRENT_PROJECT_VERSION = 2026091207' '$PROJECT'"
++check_sh 'Speed version 3.0.11' "grep -q 'MARKETING_VERSION = 3.0.11' '$PROJECT'"
++check_sh 'Speed build 2026091208' "grep -q 'CURRENT_PROJECT_VERSION = 2026091208' '$PROJECT'"
+@@ -181,7 +181,7 @@
+-check_sh '3.0.4 cadence recovery ignores non-foreground lifecycle while anchor remains installed' "grep -A16 '@objc private func step' '$REFRESH' | grep -q 'driverRuntimeState == .running' && grep -A16 '@objc private func step' '$REFRESH' | grep -q 'foregroundActive'"
++check_sh '3.0.4 cadence recovery ignores non-foreground lifecycle while anchor remains installed' "grep -A34 '@objc private func step' '$REFRESH' | grep -q 'driverRuntimeState == .running' && grep -A34 '@objc private func step' '$REFRESH' | grep -q 'foregroundActive'"
+@@ -190,6 +190,9 @@
+ check_sh '3.0.7 recorder hot path is gated' "grep -A4 'func recordFrame' '$LOGGER' | grep -q 'guard isRecording else { return }'"
++check_sh '3.0.11 recorder arguments are not built when recording is off' "grep -A18 '@objc private func step' '$REFRESH' | grep -q 'if recorder.isRecording' && grep -A18 '@objc private func step' '$REFRESH' | grep -q 'runtimeState: driverRuntimeState.title'"
++check_sh '3.0.11 background anchor skips UIKit traversal on normal ticks' "grep -A28 '@objc private func step' '$REFRESH' | grep -q 'guard driverRuntimeState == .running else { return }'"
++check_sh '3.0.11 recorder frame ring is lazy' "grep -q 'private var frames: \[FrameSample?\] = \[\]' '$LOGGER' && ! grep -A6 'private init()' '$LOGGER' | grep -q 'Array(repeating: nil, count: capacity)' && grep -A8 'func startNewSession()' '$LOGGER' | grep -q 'Array(repeating: nil, count: capacity)'"
