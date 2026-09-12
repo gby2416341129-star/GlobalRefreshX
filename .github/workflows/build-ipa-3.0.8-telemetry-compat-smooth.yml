@@ -5,7 +5,9 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/build-ipa-3.0.8-telemetry-compat-smooth.yml'
-      - 'patches/speed308-telemetry-compat-smooth.b64'
+      - 'patches/speed308.part1'
+      - 'patches/speed308.part2'
+      - 'patches/speed308.part3'
   workflow_dispatch:
 
 permissions:
@@ -35,7 +37,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base64 -D < "$GITHUB_WORKSPACE/patches/speed308-telemetry-compat-smooth.b64" | gunzip > "$RUNNER_TEMP/speed308.patch"
+          cat "$GITHUB_WORKSPACE/patches/speed308.part1" "$GITHUB_WORKSPACE/patches/speed308.part2" "$GITHUB_WORKSPACE/patches/speed308.part3" > "$RUNNER_TEMP/speed308.b64"
+          base64 -D < "$RUNNER_TEMP/speed308.b64" | gunzip > "$RUNNER_TEMP/speed308.patch"
           test "$(shasum -a 256 "$RUNNER_TEMP/speed308.patch" | awk '{print $1}')" = "cd9794d7f503e78ccf8534284073f3ad4fccefc7ef67d1efe87ebabb96a727c0"
           cd "$PROJECT_ROOT"
           patch --dry-run -p1 < "$RUNNER_TEMP/speed308.patch"
