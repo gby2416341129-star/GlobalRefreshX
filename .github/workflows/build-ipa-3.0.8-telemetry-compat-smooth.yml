@@ -1,0 +1,109 @@
+name: Build Speed 3.0.8 Telemetry + Compatibility Smooth
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-ipa-3.0.8-telemetry-compat-smooth.yml'
+      - 'patches/speed308-telemetry-compat-smooth.b64'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore Speed 3.0.7 baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE/source"
+          gh release download dev-latest --pattern 'Speed-3.0.7-Recorder-Control-Source.tar.gz' --dir "$GITHUB_WORKSPACE/baseline"
+          baseline="$GITHUB_WORKSPACE/baseline/Speed-3.0.7-Recorder-Control-Source.tar.gz"
+          tar -xzf "$baseline" -C "$GITHUB_WORKSPACE/source"
+          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/source" >> "$GITHUB_ENV"
+
+      - name: Apply Speed 3.0.8 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -D < "$GITHUB_WORKSPACE/patches/speed308-telemetry-compat-smooth.b64" | gunzip > "$RUNNER_TEMP/speed308.patch"
+          test "$(shasum -a 256 "$RUNNER_TEMP/speed308.patch" | awk '{print $1}')" = "cd9794d7f503e78ccf8534284073f3ad4fccefc7ef67d1efe87ebabb96a727c0"
+          cd "$PROJECT_ROOT"
+          patch --dry-run -p1 < "$RUNNER_TEMP/speed308.patch"
+          patch -p1 < "$RUNNER_TEMP/speed308.patch"
+          rm -rf build dist
+
+      - name: Select Xcode 26+
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/select_xcode_26.sh"
+
+      - name: Execute core regressions
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/test_core.sh"
+
+      - name: Verify integrated project
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/verify_project.sh"
+
+      - name: Build unsigned IPA
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/build_unsigned_ipa.sh"
+
+      - name: Require warning-clean Swift compilation
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$PROJECT_ROOT/build/diagnostics/xcodebuild.log"
+          test -f "$log"
+          if grep -E '\.swift:[0-9]+:[0-9]+: warning:' "$log"; then
+            echo 'Swift source warnings are not allowed in Speed 3.0.8.' >&2
+            exit 1
+          fi
+
+      - name: Validate actual Speed 3.0.8 IPA
+        shell: bash
+        run: python3 "$PROJECT_ROOT/scripts/validate_ipa.py" "$PROJECT_ROOT/dist/Speed-unsigned.ipa"
+
+      - name: Package release outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          ipa="$GITHUB_WORKSPACE/out/Speed-3.0.8-Telemetry-Compatibility-Smooth-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-3.0.8-Telemetry-Compatibility-Smooth-Source.tar.gz"
+          cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" "$ipa"
+          shasum -a 256 "$ipa" > "$ipa.sha256"
+          tar --exclude='./build' --exclude='./dist' -czf "$src" -C "$PROJECT_ROOT" .
+          shasum -a 256 "$src" > "$src.sha256"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-3.0.8-Telemetry-Compatibility-Smooth
+          path: |
+            out/Speed-3.0.8-Telemetry-Compatibility-Smooth-unsigned.ipa
+            out/Speed-3.0.8-Telemetry-Compatibility-Smooth-unsigned.ipa.sha256
+            out/Speed-3.0.8-Telemetry-Compatibility-Smooth-Source.tar.gz
+            out/Speed-3.0.8-Telemetry-Compatibility-Smooth-Source.tar.gz.sha256
+            source/build/diagnostics/xcodebuild.log
+          if-no-files-found: error
+
+      - name: Publish rolling prerelease assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa="$GITHUB_WORKSPACE/out/Speed-3.0.8-Telemetry-Compatibility-Smooth-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-3.0.8-Telemetry-Compatibility-Smooth-Source.tar.gz"
+          gh release upload dev-latest "$ipa" "$src" --clobber
+          gh release edit dev-latest --target "$GITHUB_SHA" --title "Speed 3.0.8 Telemetry + Compatibility Smooth" --notes "A/B-data-guided build. Manual Compatibility keeps the conservative CAD-only 120 Hz policy but now uses VideoCall geometry instead of forcing PlayerLayer geometry. Flight Recorder 1.2 adds low-rate Speed-process CPU/RAM/Metal allocation/battery/thermal telemetry while clearly marking public-iOS limits for real-time system GPU utilization, live CPU/GPU clocks, and device watts. Unsigned IPA: sign before installation." --prerelease
