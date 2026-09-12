@@ -1,0 +1,117 @@
+name: Build Speed 3.0.10 PlayerLayer Optimized
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-ipa-3.0.10-playerlayer-optimized.yml'
+      - 'patches/speed310-playerlayer-optimized.b64'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore Speed 3.0.9 baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE/source"
+          gh release download dev-latest --pattern 'Speed-3.0.9-PlayerLayer-Telemetry-Source.tar.gz' --dir "$GITHUB_WORKSPACE/baseline"
+          baseline="$GITHUB_WORKSPACE/baseline/Speed-3.0.9-PlayerLayer-Telemetry-Source.tar.gz"
+          tar -xzf "$baseline" -C "$GITHUB_WORKSPACE/source"
+          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/source" >> "$GITHUB_ENV"
+
+      - name: Apply Speed 3.0.10 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -D < "$GITHUB_WORKSPACE/patches/speed310-playerlayer-optimized.b64" | gunzip > "$RUNNER_TEMP/speed310.patch"
+          test "$(shasum -a 256 "$RUNNER_TEMP/speed310.patch" | awk '{print $1}')" = "950ed1266533f5a998baed943175f17ada438378635683e4273a09f54f98f9a8"
+          cd "$PROJECT_ROOT"
+          patch --dry-run -p1 < "$RUNNER_TEMP/speed310.patch"
+          patch -p1 < "$RUNNER_TEMP/speed310.patch"
+          rm -rf build dist
+
+      - name: Select Xcode 26+
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/select_xcode_26.sh"
+
+      - name: Parse modified Swift sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -frontend -parse "$PROJECT_ROOT/pip_swift/pip_swift/ViewController.swift"
+          swiftc -frontend -parse "$PROJECT_ROOT/pip_swift/pip_swift/RefreshRateController.swift"
+          swiftc -frontend -parse "$PROJECT_ROOT/pip_swift/pip_swift/AppDebugLogger.swift"
+
+      - name: Execute core regressions
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/test_core.sh"
+
+      - name: Verify integrated project
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/verify_project.sh"
+
+      - name: Build unsigned IPA
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/build_unsigned_ipa.sh"
+
+      - name: Require warning-clean Swift compilation
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$PROJECT_ROOT/build/diagnostics/xcodebuild.log"
+          test -f "$log"
+          if grep -E '\.swift:[0-9]+:[0-9]+: warning:' "$log"; then
+            echo 'Swift source warnings are not allowed in Speed 3.0.10.' >&2
+            exit 1
+          fi
+
+      - name: Validate actual Speed 3.0.10 IPA
+        shell: bash
+        run: python3 "$PROJECT_ROOT/scripts/validate_ipa.py" "$PROJECT_ROOT/dist/Speed-unsigned.ipa"
+
+      - name: Package release outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          ipa="$GITHUB_WORKSPACE/out/Speed-3.0.10-PlayerLayer-Optimized-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-3.0.10-PlayerLayer-Optimized-Source.tar.gz"
+          cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" "$ipa"
+          shasum -a 256 "$ipa" > "$ipa.sha256"
+          tar --exclude='./build' --exclude='./dist' -czf "$src" -C "$PROJECT_ROOT" .
+          shasum -a 256 "$src" > "$src.sha256"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-3.0.10-PlayerLayer-Optimized
+          path: |
+            out/Speed-3.0.10-PlayerLayer-Optimized-unsigned.ipa
+            out/Speed-3.0.10-PlayerLayer-Optimized-unsigned.ipa.sha256
+            out/Speed-3.0.10-PlayerLayer-Optimized-Source.tar.gz
+            out/Speed-3.0.10-PlayerLayer-Optimized-Source.tar.gz.sha256
+            source/build/diagnostics/xcodebuild.log
+          if-no-files-found: error
+
+      - name: Publish rolling prerelease assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa="$GITHUB_WORKSPACE/out/Speed-3.0.10-PlayerLayer-Optimized-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-3.0.10-PlayerLayer-Optimized-Source.tar.gz"
+          gh release upload dev-latest "$ipa" "$src" --clobber
+          gh release edit dev-latest --target "$GITHUB_SHA" --title "Speed 3.0.10 PlayerLayer Optimized" --notes "3.0.9 A/B/C data-guided build. Auto and Compatibility refresh behavior are unchanged. PlayerLayer keeps its real AVPlayerLayer + PlayerLayer geometry + CAD-only 120 Hz route, but its invisible placeholder media clock is reduced to 0.25x and redundant play commands are suppressed to lower process CPU. PlayerLayer UI/diagnostic labels are separated from Compatibility, the confirmation button is corrected, and Flight Recorder schema 4 exports the PlayerLayer media rate." --prerelease
