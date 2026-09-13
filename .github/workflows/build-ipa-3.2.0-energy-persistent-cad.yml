@@ -1,0 +1,147 @@
+name: Build Speed 3.2.0 Energy Persistent CAD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-ipa-3.2.0-energy-persistent-cad.yml'
+      - 'patches/speed320-energy-persistent-cad.patch.gz.b64'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore Speed 3.1.1 baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE/source"
+          gh release download dev-latest --pattern 'Speed-3.1.1-UI-State-Fix-Source.tar.gz' --dir "$GITHUB_WORKSPACE/baseline"
+          baseline="$GITHUB_WORKSPACE/baseline/Speed-3.1.1-UI-State-Fix-Source.tar.gz"
+          test -f "$baseline"
+          tar -xzf "$baseline" -C "$GITHUB_WORKSPACE/source"
+          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/source" >> "$GITHUB_ENV"
+
+      - name: Decode verify and apply Speed 3.2.0 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          encoded="$GITHUB_WORKSPACE/patches/speed320-energy-persistent-cad.patch.gz.b64"
+          patch_file="$RUNNER_TEMP/speed320-energy-persistent-cad.patch"
+          python3 - "$encoded" "$patch_file" <<'PY'
+          import base64, gzip, pathlib, sys
+          encoded = pathlib.Path(sys.argv[1]).read_text().strip()
+          pathlib.Path(sys.argv[2]).write_bytes(gzip.decompress(base64.b64decode(encoded)))
+          PY
+          actual="$(shasum -a 256 "$patch_file" | awk '{print $1}')"
+          expected="531f4e35fba864b81c8c4501f2e1b5985967c885683295fb92fa6c7cc6bbdb11"
+          echo "patch sha256=$actual"
+          test "$actual" = "$expected"
+          cd "$PROJECT_ROOT"
+          patch --dry-run -p1 < "$patch_file"
+          patch -p1 < "$patch_file"
+          rm -rf build dist
+
+      - name: Select Xcode 26+
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/select_xcode_26.sh"
+
+      - name: Parse modified Swift sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -frontend -parse "$PROJECT_ROOT/pip_swift/pip_swift/PiPViews.swift"
+          swiftc -frontend -parse "$PROJECT_ROOT/pip_swift/pip_swift/ViewController.swift"
+          swiftc -frontend -parse "$PROJECT_ROOT/pip_swift/pip_swift/RefreshRateController.swift"
+          swiftc -frontend -parse "$PROJECT_ROOT/pip_swift/pip_swift/AppDebugLogger.swift"
+
+      - name: Execute core regressions
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/test_core.sh"
+
+      - name: Verify integrated project
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/verify_project.sh"
+
+      - name: Build unsigned IPA
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/build_unsigned_ipa.sh"
+
+      - name: Require warning-clean Swift compilation
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$PROJECT_ROOT/build/diagnostics/xcodebuild.log"
+          test -f "$log"
+          if grep -E '\.swift:[0-9]+:[0-9]+: warning:' "$log"; then
+            echo 'Swift source warnings are not allowed in Speed 3.2.0.' >&2
+            exit 1
+          fi
+
+      - name: Validate actual Speed 3.2.0 IPA
+        shell: bash
+        run: python3 "$PROJECT_ROOT/scripts/validate_ipa.py" "$PROJECT_ROOT/dist/Speed-unsigned.ipa"
+
+      - name: Verify packaged version and persistent CAD energy route
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_plist="$PROJECT_ROOT/build/DerivedData/Build/Products/Release-iphoneos/Speed.app/Info.plist"
+          test -f "$app_plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_plist")" = "3.2.0"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_plist")" = "2026091302"
+          refresh="$PROJECT_ROOT/pip_swift/pip_swift/RefreshRateController.swift"
+          views="$PROJECT_ROOT/pip_swift/pip_swift/PiPViews.swift"
+          grep -q 'private final class LowPowerCADAnchorWorker' "$refresh"
+          grep -q 'worker.qualityOfService = .utility' "$refresh"
+          grep -q 'minimum: requestedRate' "$refresh"
+          grep -q 'maximum: requestedRate' "$refresh"
+          grep -q 'preferred: requestedRate' "$refresh"
+          grep -q 'fallbackFromLowPowerBackgroundAnchor' "$refresh"
+          grep -q '低功耗持续 120Hz 锚点（实验）' "$views"
+          ! grep -q 'animation.preferredFrameRateRange = CAFrameRateRange' "$refresh"
+
+      - name: Package release outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          ipa="$GITHUB_WORKSPACE/out/Speed-3.2.0-Energy-Persistent-CAD-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-3.2.0-Energy-Persistent-CAD-Source.tar.gz"
+          cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" "$ipa"
+          shasum -a 256 "$ipa" > "$ipa.sha256"
+          tar --exclude='./build' --exclude='./dist' -czf "$src" -C "$PROJECT_ROOT" .
+          shasum -a 256 "$src" > "$src.sha256"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-3.2.0-Energy-Persistent-CAD
+          path: |
+            out/Speed-3.2.0-Energy-Persistent-CAD-unsigned.ipa
+            out/Speed-3.2.0-Energy-Persistent-CAD-unsigned.ipa.sha256
+            out/Speed-3.2.0-Energy-Persistent-CAD-Source.tar.gz
+            out/Speed-3.2.0-Energy-Persistent-CAD-Source.tar.gz.sha256
+            source/build/diagnostics/xcodebuild.log
+          if-no-files-found: error
+
+      - name: Publish rolling prerelease assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa="$GITHUB_WORKSPACE/out/Speed-3.2.0-Energy-Persistent-CAD-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-3.2.0-Energy-Persistent-CAD-Source.tar.gz"
+          gh release upload dev-latest "$ipa" "$src" --clobber
+          gh release edit dev-latest --target "$GITHUB_SHA" --title "Speed 3.2.0 Energy Persistent CAD" --notes "Replaces the failed CA-only low-wakeup experiment with a continuous hard-max 120 Hz CADDisplayLink energy route. Background callbacks move to a utility-QoS worker run loop while the 120 Hz request remains continuously active. The proven main-thread CAD anchor stays alive until the worker is ready, and an on-worker cadence watchdog automatically restores the main-thread anchor if 120-callback timing degrades. Auto, Standard, Compatibility, PlayerLayer, sparse PlayerLayer media, Energy Probe, Full Recorder, and the 3.1.1 UI state fix are retained." --prerelease
