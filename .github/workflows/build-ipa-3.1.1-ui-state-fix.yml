@@ -1,0 +1,135 @@
+name: Build Speed 3.1.1 UI State Fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-ipa-3.1.1-ui-state-fix.yml'
+      - 'patches/speed311-ui-state-fix.patch'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore Speed 3.1.0 baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE/source"
+          gh release download dev-latest --pattern 'Speed-3.1.0-Final-Energy-Architecture-Source.tar.gz' --dir "$GITHUB_WORKSPACE/baseline"
+          baseline="$GITHUB_WORKSPACE/baseline/Speed-3.1.0-Final-Energy-Architecture-Source.tar.gz"
+          test -f "$baseline"
+          tar -xzf "$baseline" -C "$GITHUB_WORKSPACE/source"
+          echo "PROJECT_ROOT=$GITHUB_WORKSPACE/source" >> "$GITHUB_ENV"
+
+      - name: Verify and apply Speed 3.1.1 fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch_file="$GITHUB_WORKSPACE/patches/speed311-ui-state-fix.patch"
+          actual="$(shasum -a 256 "$patch_file" | awk '{print $1}')"
+          expected="a43044b0e969db628798446957e783893c4558b60f86d82d539654dba94b421c"
+          echo "patch sha256=$actual"
+          test "$actual" = "$expected"
+          cd "$PROJECT_ROOT"
+          patch --dry-run -p1 < "$patch_file"
+          patch -p1 < "$patch_file"
+          rm -rf build dist
+
+      - name: Select Xcode 26+
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/select_xcode_26.sh"
+
+      - name: Parse modified Swift sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -frontend -parse "$PROJECT_ROOT/pip_swift/pip_swift/PiPViews.swift"
+          swiftc -frontend -parse "$PROJECT_ROOT/pip_swift/pip_swift/ViewController.swift"
+          swiftc -frontend -parse "$PROJECT_ROOT/pip_swift/pip_swift/RefreshRateController.swift"
+          swiftc -frontend -parse "$PROJECT_ROOT/pip_swift/pip_swift/AppDebugLogger.swift"
+
+      - name: Execute core regressions
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/test_core.sh"
+
+      - name: Verify integrated project
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/verify_project.sh"
+
+      - name: Build unsigned IPA
+        shell: bash
+        run: "$PROJECT_ROOT/scripts/build_unsigned_ipa.sh"
+
+      - name: Require warning-clean Swift compilation
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$PROJECT_ROOT/build/diagnostics/xcodebuild.log"
+          test -f "$log"
+          if grep -E '\.swift:[0-9]+:[0-9]+: warning:' "$log"; then
+            echo 'Swift source warnings are not allowed in Speed 3.1.1.' >&2
+            exit 1
+          fi
+
+      - name: Validate actual Speed 3.1.1 IPA
+        shell: bash
+        run: python3 "$PROJECT_ROOT/scripts/validate_ipa.py" "$PROJECT_ROOT/dist/Speed-unsigned.ipa"
+
+      - name: Verify packaged version and UI state fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_plist="$PROJECT_ROOT/build/DerivedData/Build/Products/Release-iphoneos/Speed.app/Info.plist"
+          test -f "$app_plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_plist")" = "3.1.1"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_plist")" = "2026091301"
+          views="$PROJECT_ROOT/pip_swift/pip_swift/PiPViews.swift"
+          test "$(grep -c 'self.flightRecorderCaptureMode = flightRecorderCaptureMode' "$views")" = "2"
+          test "$(grep -c 'self.compositorAnchorExperimentEnabled = compositorAnchorExperimentEnabled' "$views")" = "2"
+          grep -q 'UISelectionFeedbackGenerator().selectionChanged()' "$views"
+
+      - name: Package release outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          ipa="$GITHUB_WORKSPACE/out/Speed-3.1.1-UI-State-Fix-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-3.1.1-UI-State-Fix-Source.tar.gz"
+          cp "$PROJECT_ROOT/dist/Speed-unsigned.ipa" "$ipa"
+          shasum -a 256 "$ipa" > "$ipa.sha256"
+          tar --exclude='./build' --exclude='./dist' -czf "$src" -C "$PROJECT_ROOT" .
+          shasum -a 256 "$src" > "$src.sha256"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speed-3.1.1-UI-State-Fix
+          path: |
+            out/Speed-3.1.1-UI-State-Fix-unsigned.ipa
+            out/Speed-3.1.1-UI-State-Fix-unsigned.ipa.sha256
+            out/Speed-3.1.1-UI-State-Fix-Source.tar.gz
+            out/Speed-3.1.1-UI-State-Fix-Source.tar.gz.sha256
+            source/build/diagnostics/xcodebuild.log
+          if-no-files-found: error
+
+      - name: Publish rolling prerelease assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa="$GITHUB_WORKSPACE/out/Speed-3.1.1-UI-State-Fix-unsigned.ipa"
+          src="$GITHUB_WORKSPACE/out/Speed-3.1.1-UI-State-Fix-Source.tar.gz"
+          gh release upload dev-latest "$ipa" "$src" --clobber
+          gh release edit dev-latest --target "$GITHUB_SHA" --title "Speed 3.1.1 UI State Fix" --notes "Fixes the Speed 3.1.0 Laboratory UI publication regression: CAAnimation Low-Wakeup Anchor and Performance Recorder capture-mode changes now publish immediately to SwiftUI. Removes duplicate initialization assignments, adds selection haptics, and preserves the complete 3.1.0 energy architecture and refresh behavior unchanged." --prerelease
