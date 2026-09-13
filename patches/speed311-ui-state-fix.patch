@@ -1,0 +1,130 @@
+diff --git a/pip_swift/pip_swift.xcodeproj/project.pbxproj b/pip_swift/pip_swift.xcodeproj/project.pbxproj
+index 031f11a..87e268a 100644
+--- a/pip_swift/pip_swift.xcodeproj/project.pbxproj
++++ b/pip_swift/pip_swift.xcodeproj/project.pbxproj
+@@ -527,8 +527,8 @@
+ 				ENABLE_DEBUG_DYLIB = NO;
+ 				INFOPLIST_FILE = pip_swift/Info.plist;
+ 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+-				CURRENT_PROJECT_VERSION = 2026091209;
+-				MARKETING_VERSION = 3.1.0;
++				CURRENT_PROJECT_VERSION = 2026091301;
++				MARKETING_VERSION = 3.1.1;
+ 				LD_RUNPATH_SEARCH_PATHS = (
+ 					"$(inherited)",
+ 					"@executable_path/Frameworks",
+@@ -550,8 +550,8 @@
+ 				DEVELOPMENT_TEAM = "";
+ 				INFOPLIST_FILE = pip_swift/Info.plist;
+ 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+-				CURRENT_PROJECT_VERSION = 2026091209;
+-				MARKETING_VERSION = 3.1.0;
++				CURRENT_PROJECT_VERSION = 2026091301;
++				MARKETING_VERSION = 3.1.1;
+ 				LD_RUNPATH_SEARCH_PATHS = (
+ 					"$(inherited)",
+ 					"@executable_path/Frameworks",
+@@ -569,7 +569,7 @@
+ 			buildSettings = {
+ 				APPLICATION_EXTENSION_API_ONLY = YES;
+ 				CODE_SIGN_STYLE = Automatic;
+-				CURRENT_PROJECT_VERSION = 2026091209;
++				CURRENT_PROJECT_VERSION = 2026091301;
+ 				DEVELOPMENT_TEAM = "";
+ 				GENERATE_INFOPLIST_FILE = NO;
+ 				INFOPLIST_FILE = SpeedControls/Info.plist;
+@@ -579,7 +579,7 @@
+ 					"@executable_path/Frameworks",
+ 					"@executable_path/../../Frameworks",
+ 				);
+-				MARKETING_VERSION = 3.1.0;
++				MARKETING_VERSION = 3.1.1;
+ 				PRODUCT_BUNDLE_IDENTIFIER = com.isil.speed.controls;
+ 				PRODUCT_NAME = "$(TARGET_NAME)";
+ 				SKIP_INSTALL = YES;
+@@ -593,7 +593,7 @@
+ 			buildSettings = {
+ 				APPLICATION_EXTENSION_API_ONLY = YES;
+ 				CODE_SIGN_STYLE = Automatic;
+-				CURRENT_PROJECT_VERSION = 2026091209;
++				CURRENT_PROJECT_VERSION = 2026091301;
+ 				DEVELOPMENT_TEAM = "";
+ 				GENERATE_INFOPLIST_FILE = NO;
+ 				INFOPLIST_FILE = SpeedControls/Info.plist;
+@@ -603,7 +603,7 @@
+ 					"@executable_path/Frameworks",
+ 					"@executable_path/../../Frameworks",
+ 				);
+-				MARKETING_VERSION = 3.1.0;
++				MARKETING_VERSION = 3.1.1;
+ 				PRODUCT_BUNDLE_IDENTIFIER = com.isil.speed.controls;
+ 				PRODUCT_NAME = "$(TARGET_NAME)";
+ 				SKIP_INSTALL = YES;
+diff --git a/pip_swift/pip_swift/PiPViews.swift b/pip_swift/pip_swift/PiPViews.swift
+index 465545d..102463a 100644
+--- a/pip_swift/pip_swift/PiPViews.swift
++++ b/pip_swift/pip_swift/PiPViews.swift
+@@ -91,8 +91,6 @@ final class SpeedHomeViewModel {
+         self.flightRecorderHasSession = flightRecorderHasSession
+         self.flightRecorderCaptureMode = flightRecorderCaptureMode
+         self.compositorAnchorExperimentEnabled = compositorAnchorExperimentEnabled
+-        self.flightRecorderCaptureMode = flightRecorderCaptureMode
+-        self.compositorAnchorExperimentEnabled = compositorAnchorExperimentEnabled
+         self.onTogglePiP = onTogglePiP
+         self.onHidePiP = onHidePiP
+         self.onStartAndHidePiP = onStartAndHidePiP
+@@ -157,6 +155,8 @@ final class SpeedHomeViewModel {
+         self.refreshEngineSnapshot = refreshEngineSnapshot
+         self.flightRecorderIsRecording = flightRecorderIsRecording
+         self.flightRecorderHasSession = flightRecorderHasSession
++        self.flightRecorderCaptureMode = flightRecorderCaptureMode
++        self.compositorAnchorExperimentEnabled = compositorAnchorExperimentEnabled
+     }
+ }
+ 
+@@ -542,6 +542,7 @@ struct PiPHomeView: View {
+                         ForEach(SpeedRecorderCaptureMode.allCases, id: \.rawValue) { mode in
+                             Button {
+                                 guard !flightRecorderIsRecording else { return }
++                                UISelectionFeedbackGenerator().selectionChanged()
+                                 onSetFlightRecorderCaptureMode(mode)
+                             } label: {
+                                 VStack(spacing: 3) {
+diff --git a/scripts/validate_ipa.py b/scripts/validate_ipa.py
+index 4dc23b9..653654c 100644
+--- a/scripts/validate_ipa.py
++++ b/scripts/validate_ipa.py
+@@ -8,8 +8,8 @@ with zipfile.ZipFile(p) as z:
+     names=z.namelist()
+     for prefix,bundle,binary in [('Payload/Speed.app/','com.isil.speed','Speed'),('Payload/Speed.app/PlugIns/SpeedControls.appex/','com.isil.speed.controls','SpeedControls')]:
+         info=plistlib.loads(z.read(prefix+'Info.plist'))
+-        assert info['CFBundleShortVersionString']=='3.1.0', info
+-        assert info['CFBundleVersion']=='2026091209', info
++        assert info['CFBundleShortVersionString']=='3.1.1', info
++        assert info['CFBundleVersion']=='2026091301', info
+         assert info['CFBundleIdentifier']==bundle, info
+         assert info['MinimumOSVersion'].split('.')[0]=='26', info
+         assert z.read(prefix+binary)[:4] in (b'\xcf\xfa\xed\xfe',b'\xca\xfe\xba\xbe'), 'missing Mach-O binary'
+diff --git a/scripts/verify_project.sh b/scripts/verify_project.sh
+index 30e97ab..a294550 100755
+--- a/scripts/verify_project.sh
++++ b/scripts/verify_project.sh
+@@ -20,8 +20,8 @@ REFRESH="$APP/RefreshRateController.swift"
+ VIEWS="$APP/PiPViews.swift"
+ LOGGER="$APP/AppDebugLogger.swift"
+ 
+-check_sh 'Speed version 3.1.0' "grep -q 'MARKETING_VERSION = 3.1.0' '$PROJECT'"
+-check_sh 'Speed build 2026091209' "grep -q 'CURRENT_PROJECT_VERSION = 2026091209' '$PROJECT'"
++check_sh 'Speed version 3.1.1' "grep -q 'MARKETING_VERSION = 3.1.1' '$PROJECT'"
++check_sh 'Speed build 2026091301' "grep -q 'CURRENT_PROJECT_VERSION = 2026091301' '$PROJECT'"
+ check_sh 'iOS 26 deployment target' "grep -q 'IPHONEOS_DEPLOYMENT_TARGET = 26.0' '$PROJECT'"
+ check_sh 'Speed identity retained' "grep -q 'PRODUCT_BUNDLE_IDENTIFIER = com.isil.speed' '$PROJECT' && grep -q 'PRODUCT_NAME = Speed' '$PROJECT'"
+ check_sh 'Release whole-module optimization retained' "grep -q 'SWIFT_COMPILATION_MODE = wholemodule' '$PROJECT' && grep -q 'SWIFT_OPTIMIZATION_LEVEL = \"-O\"' '$PROJECT'"
+@@ -63,4 +63,7 @@ check_sh 'CA experiment UI is clearly experimental' "grep -q 'CAAnimation 低唤
+ check_sh 'Telemetry states unavailable private metrics honestly' "grep -q 'realtimeGPUUtilizationAvailable: false' '$LOGGER' && grep -q 'realtimeCPUFrequencyAvailable: false' '$LOGGER' && grep -q 'realtimeDevicePowerWattsAvailable: false' '$LOGGER'"
+ check_sh 'No patch backup source files shipped' "! find '$APP' -name '*.orig' -print -quit | grep -q ."
+ 
++check_sh 'Home model publishes recorder mode mutations' "test \"\$(grep -c 'self.flightRecorderCaptureMode = flightRecorderCaptureMode' '$VIEWS')\" -eq 2"
++check_sh 'Home model publishes compositor anchor mutations' "test \"\$(grep -c 'self.compositorAnchorExperimentEnabled = compositorAnchorExperimentEnabled' '$VIEWS')\" -eq 2"
++
+ printf 'Verification passed: %d checks\n' "$pass"
