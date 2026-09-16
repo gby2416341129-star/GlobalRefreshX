@@ -77,9 +77,9 @@ $projectPath = 'src/KukaManager/KukaManager.csproj'
 $project = Get-Content $projectPath -Raw -Encoding UTF8
 $project = [Regex]::Replace($project, '<Version>[^<]+</Version>', '<Version>1.2.0</Version>', 1)
 if ($project -notmatch '<ApplicationManifest>app\.manifest</ApplicationManifest>') {
-    $needle = '<ApplicationIcon>kuka.ico</ApplicationIcon>'
-    if (-not $project.Contains($needle)) { throw 'ApplicationIcon anchor missing in csproj' }
-    $project = $project.Replace($needle, $needle + "`r`n    <ApplicationManifest>app.manifest</ApplicationManifest>")
+    $closing = $project.IndexOf('</PropertyGroup>', [StringComparison]::Ordinal)
+    if ($closing -lt 0) { throw 'PropertyGroup closing tag missing in csproj' }
+    $project = $project.Insert($closing, "    <ApplicationManifest>app.manifest</ApplicationManifest>`r`n  ")
 }
 [IO.File]::WriteAllText($projectPath, $project, [Text.UTF8Encoding]::new($false))
 
