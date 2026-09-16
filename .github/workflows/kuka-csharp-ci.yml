@@ -80,13 +80,20 @@ jobs:
             $out.Dispose()
             $in.Dispose()
           }
-          git apply --check --binary kuka-ui-110.patch
+          git apply --check --binary --exclude=src/KukaManager/KukaManager.csproj kuka-ui-110.patch
           if ($LASTEXITCODE -ne 0) { throw "UI patch check failed: $LASTEXITCODE" }
-          git apply --binary kuka-ui-110.patch
+          git apply --binary --exclude=src/KukaManager/KukaManager.csproj kuka-ui-110.patch
           if ($LASTEXITCODE -ne 0) { throw "UI patch apply failed: $LASTEXITCODE" }
+
+          $projectPath = 'src/KukaManager/KukaManager.csproj'
+          $project = Get-Content $projectPath -Raw -Encoding UTF8
+          $updatedProject = [Regex]::Replace($project, '<Version>[^<]+</Version>', '<Version>1.1.0</Version>', 1)
+          if ($updatedProject -eq $project -and $project -notmatch '<Version>1\.1\.0</Version>') { throw 'Could not update project version' }
+          [IO.File]::WriteAllText($projectPath, $updatedProject, [Text.UTF8Encoding]::new($false))
+
           $appPaths = Get-Content 'src/KukaManager/Utils/AppPaths.cs' -Raw -Encoding UTF8
           if ($appPaths -notmatch '1\.1\.0') { throw 'App version did not update to 1.1.0' }
-          $project = Get-Content 'src/KukaManager/KukaManager.csproj' -Raw -Encoding UTF8
+          $project = Get-Content $projectPath -Raw -Encoding UTF8
           if ($project -notmatch '<Version>1\.1\.0</Version>') { throw 'Project version did not update to 1.1.0' }
 
       - name: Restore main app
