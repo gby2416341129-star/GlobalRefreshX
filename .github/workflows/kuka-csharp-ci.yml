@@ -23,9 +23,9 @@ jobs:
         with:
           dotnet-version: '10.0.401'
 
-      - name: Build test publish and startup verify Kuka 1.2.0
+      - name: Build, test, publish and startup-check Kuka 1.2.0
         shell: pwsh
-        run: .\kuka-ui\build-120.ps1
+        run: .\kuka-ui\build-120-ci.ps1
 
       - name: Upload verified Windows build
         uses: actions/upload-artifact@v4
