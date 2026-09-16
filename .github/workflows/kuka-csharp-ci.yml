@@ -1,4 +1,4 @@
-name: Kuka CSharp UI 1.1.1 Windows Verify
+name: Kuka CSharp UI 1.2.0 Windows Verify
 
 on:
   workflow_dispatch:
@@ -46,11 +46,9 @@ jobs:
           $b64 = ($parts -join '')
           if ($b64.Length -ne 63168) { throw "Unexpected base64 length: $($b64.Length)" }
           [IO.File]::WriteAllText('source.b64', $b64, [Text.Encoding]::ASCII)
-          $b64Hash = (Get-FileHash source.b64 -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($b64Hash -ne '7e406b7bddabd6aa206cf151e3313af67e2d33baf1bc9cc25509c71f45cb5039') { throw "Base64 checksum mismatch: $b64Hash" }
+          if ((Get-FileHash source.b64 -Algorithm SHA256).Hash.ToLowerInvariant() -ne '7e406b7bddabd6aa206cf151e3313af67e2d33baf1bc9cc25509c71f45cb5039') { throw 'Base64 checksum mismatch' }
           [IO.File]::WriteAllBytes('source.tar.xz', [Convert]::FromBase64String($b64))
-          $tarHash = (Get-FileHash source.tar.xz -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($tarHash -ne '796cf89de00eb700817a0aa16e38b5c31955218ca857fd7b27f84bd1a4fae12d') { throw "Archive checksum mismatch: $tarHash" }
+          if ((Get-FileHash source.tar.xz -Algorithm SHA256).Hash.ToLowerInvariant() -ne '796cf89de00eb700817a0aa16e38b5c31955218ca857fd7b27f84bd1a4fae12d') { throw 'Archive checksum mismatch' }
           tar -xf source.tar.xz
           if ($LASTEXITCODE -ne 0) { throw "tar extraction failed: $LASTEXITCODE" }
           if (-not (Test-Path 'src/KukaManager/KukaManager.csproj')) { throw 'Project not extracted' }
@@ -64,63 +62,103 @@ jobs:
         shell: pwsh
         run: |
           $payload = 'kuka-ui/patch.gz.b64'
-          if (-not (Test-Path $payload)) { throw "Missing UI patch payload: $payload" }
-          $payloadHash = (Get-FileHash $payload -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($payloadHash -ne 'a14ad60f0d3ae54af10cca88dcfa7a568e9927a5263c67be912f420d38abf07e') { throw "UI patch payload checksum mismatch: $payloadHash" }
+          if ((Get-FileHash $payload -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'a14ad60f0d3ae54af10cca88dcfa7a568e9927a5263c67be912f420d38abf07e') { throw '1.1.0 payload checksum mismatch' }
           $b64 = (Get-Content $payload -Raw -Encoding ASCII).Trim()
           [IO.File]::WriteAllBytes('kuka-ui-110.patch.gz', [Convert]::FromBase64String($b64))
-          $in = [IO.File]::OpenRead('kuka-ui-110.patch.gz')
-          $out = [IO.File]::Create('kuka-ui-110.patch')
-          try {
-            $gz = [IO.Compression.GzipStream]::new($in, [IO.Compression.CompressionMode]::Decompress)
-            try { $gz.CopyTo($out) } finally { $gz.Dispose() }
-          } finally {
-            $out.Dispose()
-            $in.Dispose()
-          }
+          $in = [IO.File]::OpenRead('kuka-ui-110.patch.gz'); $out = [IO.File]::Create('kuka-ui-110.patch')
+          try { $gz = [IO.Compression.GzipStream]::new($in,[IO.Compression.CompressionMode]::Decompress); try { $gz.CopyTo($out) } finally { $gz.Dispose() } } finally { $out.Dispose(); $in.Dispose() }
           git apply --check --binary --exclude=src/KukaManager/KukaManager.csproj kuka-ui-110.patch
-          if ($LASTEXITCODE -ne 0) { throw "UI patch check failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw '1.1.0 patch check failed' }
           git apply --binary --exclude=src/KukaManager/KukaManager.csproj kuka-ui-110.patch
-          if ($LASTEXITCODE -ne 0) { throw "UI patch apply failed: $LASTEXITCODE" }
-          $projectPath = 'src/KukaManager/KukaManager.csproj'
-          $project = Get-Content $projectPath -Raw -Encoding UTF8
-          $updatedProject = [Regex]::Replace($project, '<Version>[^<]+</Version>', '<Version>1.1.0</Version>', 1)
-          [IO.File]::WriteAllText($projectPath, $updatedProject, [Text.UTF8Encoding]::new($false))
+          if ($LASTEXITCODE -ne 0) { throw '1.1.0 patch apply failed' }
+          $projectPath='src/KukaManager/KukaManager.csproj'; $project=Get-Content $projectPath -Raw -Encoding UTF8
+          $project=[Regex]::Replace($project,'<Version>[^<]+</Version>','<Version>1.1.0</Version>',1)
+          [IO.File]::WriteAllText($projectPath,$project,[Text.UTF8Encoding]::new($false))
 
-      - name: Apply 1.1.1 startup XAML fix and regression test
+      - name: Apply 1.1.1 startup XAML fix
         shell: pwsh
         run: |
-          $payload = 'kuka-ui/fix-111.patch.gz.b64'
-          if (-not (Test-Path $payload)) { throw "Missing 1.1.1 fix payload: $payload" }
-          $payloadHash = (Get-FileHash $payload -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($payloadHash -ne '2c7036849ba76d453a4976ec9a2adc23ff4b461bc56a89119b066663b6b03665') { throw "1.1.1 payload checksum mismatch: $payloadHash" }
-          $b64 = (Get-Content $payload -Raw -Encoding ASCII).Trim()
-          [IO.File]::WriteAllBytes('kuka-ui-111.patch.gz', [Convert]::FromBase64String($b64))
-          $in = [IO.File]::OpenRead('kuka-ui-111.patch.gz')
-          $out = [IO.File]::Create('kuka-ui-111.patch')
-          try {
-            $gz = [IO.Compression.GzipStream]::new($in, [IO.Compression.CompressionMode]::Decompress)
-            try { $gz.CopyTo($out) } finally { $gz.Dispose() }
-          } finally {
-            $out.Dispose()
-            $in.Dispose()
-          }
+          $payload='kuka-ui/fix-111.patch.gz.b64'
+          if ((Get-FileHash $payload -Algorithm SHA256).Hash.ToLowerInvariant() -ne '2c7036849ba76d453a4976ec9a2adc23ff4b461bc56a89119b066663b6b03665') { throw '1.1.1 payload checksum mismatch' }
+          $b64=(Get-Content $payload -Raw -Encoding ASCII).Trim()
+          [IO.File]::WriteAllBytes('kuka-ui-111.patch.gz',[Convert]::FromBase64String($b64))
+          $in=[IO.File]::OpenRead('kuka-ui-111.patch.gz'); $out=[IO.File]::Create('kuka-ui-111.patch')
+          try { $gz=[IO.Compression.GzipStream]::new($in,[IO.Compression.CompressionMode]::Decompress); try { $gz.CopyTo($out) } finally { $gz.Dispose() } } finally { $out.Dispose(); $in.Dispose() }
           git apply --check --binary --exclude=src/KukaManager/KukaManager.csproj kuka-ui-111.patch
-          if ($LASTEXITCODE -ne 0) { throw "1.1.1 patch check failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw '1.1.1 patch check failed' }
           git apply --binary --exclude=src/KukaManager/KukaManager.csproj kuka-ui-111.patch
-          if ($LASTEXITCODE -ne 0) { throw "1.1.1 patch apply failed: $LASTEXITCODE" }
-          $theme = Get-Content 'src/KukaManager/Design/Theme.cs' -Raw -Encoding UTF8
-          if ($theme -match '<Setter Property="SelectionBrush" Value="\{StaticResource SelectionBrush\}"/>') { throw 'Invalid DataGrid SelectionBrush setter still present' }
-          $test = Get-Content 'tests/KukaManager.SmokeTests/Program.cs' -Raw -Encoding UTF8
-          if ($test -notmatch 'modern WPF theme parses and loads') { throw 'Theme parse regression test missing' }
-          $projectPath = 'src/KukaManager/KukaManager.csproj'
-          $project = Get-Content $projectPath -Raw -Encoding UTF8
-          $updatedProject = [Regex]::Replace($project, '<Version>[^<]+</Version>', '<Version>1.1.1</Version>', 1)
-          [IO.File]::WriteAllText($projectPath, $updatedProject, [Text.UTF8Encoding]::new($false))
-          $appPaths = Get-Content 'src/KukaManager/Utils/AppPaths.cs' -Raw -Encoding UTF8
-          if ($appPaths -notmatch '1\.1\.1') { throw 'App version did not update to 1.1.1' }
-          $project = Get-Content $projectPath -Raw -Encoding UTF8
-          if ($project -notmatch '<Version>1\.1\.1</Version>') { throw 'Project version did not update to 1.1.1' }
+          if ($LASTEXITCODE -ne 0) { throw '1.1.1 patch apply failed' }
+          $projectPath='src/KukaManager/KukaManager.csproj'; $project=Get-Content $projectPath -Raw -Encoding UTF8
+          $project=[Regex]::Replace($project,'<Version>[^<]+</Version>','<Version>1.1.1</Version>',1)
+          [IO.File]::WriteAllText($projectPath,$project,[Text.UTF8Encoding]::new($false))
+
+      - name: Apply 1.2.0 crisp DPI typography and layout overhaul
+        shell: pwsh
+        run: |
+          $payload='kuka-ui/ui-120.patch.gz.b64'
+          if (-not (Test-Path $payload)) { throw 'Missing 1.2.0 UI patch' }
+          $actual=(Get-FileHash $payload -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne '53becf01bbb09769ae0d6c9a4c362f16b9f3818754995dc03f63f713e95d955b') { throw "1.2.0 payload checksum mismatch: $actual" }
+          $b64=(Get-Content $payload -Raw -Encoding ASCII).Trim()
+          [IO.File]::WriteAllBytes('kuka-ui-120.patch.gz',[Convert]::FromBase64String($b64))
+          $in=[IO.File]::OpenRead('kuka-ui-120.patch.gz'); $out=[IO.File]::Create('kuka-ui-120.patch')
+          try { $gz=[IO.Compression.GzipStream]::new($in,[IO.Compression.CompressionMode]::Decompress); try { $gz.CopyTo($out) } finally { $gz.Dispose() } } finally { $out.Dispose(); $in.Dispose() }
+          git apply --check --binary kuka-ui-120.patch
+          if ($LASTEXITCODE -ne 0) { throw '1.2.0 patch check failed' }
+          git apply --binary kuka-ui-120.patch
+          if ($LASTEXITCODE -ne 0) { throw '1.2.0 patch apply failed' }
+
+          @'
+          <?xml version="1.0" encoding="utf-8"?>
+          <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+            <assemblyIdentity version="1.0.0.0" name="KukaManager.app"/>
+            <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+              <security><requestedPrivileges><requestedExecutionLevel level="asInvoker" uiAccess="false" /></requestedPrivileges></security>
+            </trustInfo>
+            <application xmlns="urn:schemas-microsoft-com:asm.v3">
+              <windowsSettings>
+                <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+                <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor</dpiAwareness>
+                <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+              </windowsSettings>
+            </application>
+          </assembly>
+          '@ | Set-Content 'src/KukaManager/app.manifest' -Encoding utf8
+
+          $testPath='tests/KukaManager.SmokeTests/Program.cs'
+          $test=Get-Content $testPath -Raw -Encoding UTF8
+          if ($test -notmatch '(?m)^using System\.Windows\.Controls;') { $test=$test.Replace("using System.Windows;`r`n","using System.Windows;`r`nusing System.Windows.Controls;`r`n") }
+          if ($test -notmatch 'modern input, picker and grid templates instantiate and layout') {
+            $anchor='        Check(app.Resources.MergedDictionaries.Count > 0, "modern WPF theme parses and loads");'
+            $extra=@'
+
+        var controlsHost = new StackPanel { Width = 900, Height = 600 };
+        var combo = new ComboBox { Width = 240 };
+        combo.Items.Add("数学"); combo.Items.Add("Python"); combo.SelectedIndex = 0;
+        var datePicker = new DatePicker { Width = 240, SelectedDate = DateTime.Today };
+        var calendar = new Calendar();
+        var grid = new DataGrid { Width = 720, Height = 180 };
+        controlsHost.Children.Add(combo); controlsHost.Children.Add(datePicker); controlsHost.Children.Add(calendar); controlsHost.Children.Add(grid);
+        controlsHost.Measure(new Size(900, 600)); controlsHost.Arrange(new Rect(0, 0, 900, 600));
+        combo.ApplyTemplate(); datePicker.ApplyTemplate(); calendar.ApplyTemplate(); grid.ApplyTemplate(); controlsHost.UpdateLayout();
+        Check(combo.Template is not null && datePicker.Template is not null && grid.Template is not null,
+            "modern input, picker and grid templates instantiate and layout");
+'@
+            if (-not $test.Contains($anchor)) { throw 'Theme test anchor missing' }
+            $test=$test.Replace($anchor,$anchor+$extra)
+          }
+          [IO.File]::WriteAllText($testPath,$test,[Text.UTF8Encoding]::new($false))
+
+          if (-not (Test-Path 'src/KukaManager/app.manifest')) { throw 'PerMonitorV2 manifest missing' }
+          $manifest=Get-Content 'src/KukaManager/app.manifest' -Raw -Encoding UTF8
+          if ($manifest -notmatch 'PerMonitorV2') { throw 'PerMonitorV2 manifest invalid' }
+          $theme=Get-Content 'src/KukaManager/Design/Theme.cs' -Raw -Encoding UTF8
+          if ($theme -notmatch 'Segoe UI Variable Text') { throw 'Segoe UI Variable typography missing' }
+          if ($theme -notmatch 'TextFormattingMode') { throw 'Crisp text rendering settings missing' }
+          $appPaths=Get-Content 'src/KukaManager/Utils/AppPaths.cs' -Raw -Encoding UTF8
+          if ($appPaths -notmatch '1\.2\.0') { throw 'App version did not update to 1.2.0' }
+          $project=Get-Content 'src/KukaManager/KukaManager.csproj' -Raw -Encoding UTF8
+          if ($project -notmatch '<Version>1\.2\.0</Version>') { throw 'Project version did not update to 1.2.0' }
 
       - name: Restore main app
         run: dotnet restore .\src\KukaManager\KukaManager.csproj --source https://api.nuget.org/v3/index.json
@@ -134,7 +172,7 @@ jobs:
       - name: Build smoke tests
         run: dotnet build .\tests\KukaManager.SmokeTests\KukaManager.SmokeTests.csproj -c Release --no-restore
 
-      - name: Run smoke tests including real theme parse
+      - name: Run smoke tests including theme and control templates
         run: dotnet run --project .\tests\KukaManager.SmokeTests\KukaManager.SmokeTests.csproj -c Release --no-build
 
       - name: Restore win-x64 publish assets
@@ -146,29 +184,28 @@ jobs:
       - name: Verify executable exists
         shell: pwsh
         run: |
-          $exe = Resolve-Path '.\dist\KukaManager\KukaManager.exe'
-          $size = (Get-Item $exe).Length
+          $exe=Resolve-Path '.\dist\KukaManager\KukaManager.exe'
+          $size=(Get-Item $exe).Length
           if ($size -lt 100000) { throw "Executable unexpectedly small: $size" }
           Write-Host "Verified executable: $exe ($size bytes)"
 
       - name: Startup smoke test
         shell: pwsh
         run: |
-          $exe = Resolve-Path '.\dist\KukaManager\KukaManager.exe'
-          $p = Start-Process -FilePath $exe -PassThru
+          $exe=Resolve-Path '.\dist\KukaManager\KukaManager.exe'
+          $p=Start-Process -FilePath $exe -PassThru
           Start-Sleep -Seconds 5
           if ($p.HasExited) { throw "KukaManager exited during startup with code $($p.ExitCode)" }
           Stop-Process -Id $p.Id -Force
-          Write-Host 'KukaManager 1.1.1 stayed alive for 5 seconds.'
+          Write-Host 'KukaManager 1.2.0 stayed alive for 5 seconds.'
 
       - name: Package verified build
         shell: pwsh
-        run: |
-          Compress-Archive -Path '.\dist\KukaManager\*' -DestinationPath '.\KukaManager-CSharp-1.1.1-win-x64.zip' -Force
+        run: Compress-Archive -Path '.\dist\KukaManager\*' -DestinationPath '.\KukaManager-CSharp-1.2.0-win-x64.zip' -Force
 
       - name: Upload verified Windows build
         uses: actions/upload-artifact@v4
         with:
-          name: KukaManager-CSharp-1.1.1-win-x64
-          path: KukaManager-CSharp-1.1.1-win-x64.zip
+          name: KukaManager-CSharp-1.2.0-win-x64
+          path: KukaManager-CSharp-1.2.0-win-x64.zip
           if-no-files-found: error
