@@ -73,6 +73,13 @@ if ($LASTEXITCODE -ne 0) { throw '1.2.0 patch check failed' }
 git apply --binary --exclude=src/KukaManager/KukaManager.csproj kuka-ui-120.patch
 if ($LASTEXITCODE -ne 0) { throw '1.2.0 patch apply failed' }
 
+# RenderOptions already uses WPF's default hardware rendering mode.  The explicit
+# RenderMode.Default line is unnecessary and is not available on every target ref pack.
+$programPath = 'src/KukaManager/Program.cs'
+$program = Get-Content $programPath -Raw -Encoding UTF8
+$program = [Regex]::Replace($program, '(?m)^\s*RenderOptions\.ProcessRenderMode\s*=\s*RenderMode\.Default;\r?\n', '')
+[IO.File]::WriteAllText($programPath, $program, [Text.UTF8Encoding]::new($false))
+
 $projectPath = 'src/KukaManager/KukaManager.csproj'
 $project = Get-Content $projectPath -Raw -Encoding UTF8
 $project = [Regex]::Replace($project, '<Version>[^<]+</Version>', '<Version>1.2.0</Version>', 1)
