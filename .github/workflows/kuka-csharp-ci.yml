@@ -22,27 +22,34 @@ jobs:
         with:
           dotnet-version: '10.0.401'
 
-      - name: Reconstruct source archive
+      - name: Reconstruct and verify source archive
         shell: pwsh
         run: |
+          $chunkInfo = @(
+            @{ Path='kuka-ci/parts/part-00.txt'; Hash='cbeb917a1b42f6706fd4ac934681c34527a6bec84de2035c27365eeee8dbaa2d' },
+            @{ Path='kuka-ci/parts/part-01.txt'; Hash='7f4d5e46183e9104da87f2554b8dcb09b0a75c7a2a682d18d2a696e62441e2a2' },
+            @{ Path='kuka-ci/parts/p2-0.txt'; Hash='00e17ff8a538c8e0040ef3d822c2fd344b0e4e7cbc7ce59c9fa186957206f430' },
+            @{ Path='kuka-ci/parts/p2-1.txt'; Hash='a75345d829ee56f831a657e450b0187f8135a3d061a301d5ffcf0a1731dfac65' },
+            @{ Path='kuka-ci/parts/p2-2.txt'; Hash='38db8298eda6e74ae240496fff63c8924831f8b90d089d965ec2cf3e7b80682f' },
+            @{ Path='kuka-ci/parts/p2-3.txt'; Hash='65980abc047124ed16ed9dd80ec996d4763aec381a5ec0955458e2dd32ef16a6' },
+            @{ Path='kuka-ci/parts/part-03.txt'; Hash='30cd50942f029f256276a182d71f922c46fb67d91f2ab4b3c0d81daf3b877c15' },
+            @{ Path='kuka-ci/parts/part-04.txt'; Hash='40762de1bf88dbf7cf053f2331955c1fe38229cccfdb3723b487112e9b1d22f2' }
+          )
           $parts = @()
-          0..4 | ForEach-Object {
-            $path = ('kuka-ci/parts/part-{0:D2}.txt' -f $_)
-            if (-not (Test-Path $path)) { throw "Missing $path" }
-            $parts += (Get-Content $path -Raw -Encoding ASCII).Trim()
+          foreach ($chunk in $chunkInfo) {
+            if (-not (Test-Path $chunk.Path)) { throw "Missing $($chunk.Path)" }
+            $actual = (Get-FileHash $chunk.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $chunk.Hash) { throw "Chunk checksum mismatch: $($chunk.Path) => $actual" }
+            $parts += (Get-Content $chunk.Path -Raw -Encoding ASCII).Trim()
           }
           $b64 = ($parts -join '')
           if ($b64.Length -ne 63168) { throw "Unexpected base64 length: $($b64.Length)" }
           [IO.File]::WriteAllText('source.b64', $b64, [Text.Encoding]::ASCII)
           $b64Hash = (Get-FileHash source.b64 -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($b64Hash -ne '7e406b7bddabd6aa206cf151e3313af67e2d33baf1bc9cc25509c71f45cb5039') {
-            throw "Base64 checksum mismatch: $b64Hash"
-          }
+          if ($b64Hash -ne '7e406b7bddabd6aa206cf151e3313af67e2d33baf1bc9cc25509c71f45cb5039') { throw "Base64 checksum mismatch: $b64Hash" }
           [IO.File]::WriteAllBytes('source.tar.xz', [Convert]::FromBase64String($b64))
           $tarHash = (Get-FileHash source.tar.xz -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($tarHash -ne '796cf89de00eb700817a0aa16e38b5c31955218ca857fd7b27f84bd1a4fae12d') {
-            throw "Archive checksum mismatch: $tarHash"
-          }
+          if ($tarHash -ne '796cf89de00eb700817a0aa16e38b5c31955218ca857fd7b27f84bd1a4fae12d') { throw "Archive checksum mismatch: $tarHash" }
           tar -xf source.tar.xz
           if ($LASTEXITCODE -ne 0) { throw "tar extraction failed: $LASTEXITCODE" }
           if (-not (Test-Path 'src/KukaManager/KukaManager.csproj')) { throw 'Project not extracted' }
