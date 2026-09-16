@@ -1,4 +1,4 @@
-name: Kuka CSharp UI 1.1.0 Windows Verify
+name: Kuka CSharp UI 1.1.1 Windows Verify
 
 on:
   workflow_dispatch:
@@ -60,15 +60,13 @@ jobs:
             [IO.File]::WriteAllText($testPath, "using System.IO;`r`n" + $test, [Text.UTF8Encoding]::new($false))
           }
 
-      - name: Apply and verify Kuka 1.1.0 UI overhaul
+      - name: Apply Kuka 1.1.0 UI overhaul
         shell: pwsh
         run: |
           $payload = 'kuka-ui/patch.gz.b64'
           if (-not (Test-Path $payload)) { throw "Missing UI patch payload: $payload" }
           $payloadHash = (Get-FileHash $payload -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($payloadHash -ne 'a14ad60f0d3ae54af10cca88dcfa7a568e9927a5263c67be912f420d38abf07e') {
-            throw "UI patch payload checksum mismatch: $payloadHash"
-          }
+          if ($payloadHash -ne 'a14ad60f0d3ae54af10cca88dcfa7a568e9927a5263c67be912f420d38abf07e') { throw "UI patch payload checksum mismatch: $payloadHash" }
           $b64 = (Get-Content $payload -Raw -Encoding ASCII).Trim()
           [IO.File]::WriteAllBytes('kuka-ui-110.patch.gz', [Convert]::FromBase64String($b64))
           $in = [IO.File]::OpenRead('kuka-ui-110.patch.gz')
@@ -84,17 +82,39 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "UI patch check failed: $LASTEXITCODE" }
           git apply --binary --exclude=src/KukaManager/KukaManager.csproj kuka-ui-110.patch
           if ($LASTEXITCODE -ne 0) { throw "UI patch apply failed: $LASTEXITCODE" }
-
           $projectPath = 'src/KukaManager/KukaManager.csproj'
           $project = Get-Content $projectPath -Raw -Encoding UTF8
           $updatedProject = [Regex]::Replace($project, '<Version>[^<]+</Version>', '<Version>1.1.0</Version>', 1)
-          if ($updatedProject -eq $project -and $project -notmatch '<Version>1\.1\.0</Version>') { throw 'Could not update project version' }
           [IO.File]::WriteAllText($projectPath, $updatedProject, [Text.UTF8Encoding]::new($false))
 
+      - name: Apply 1.1.1 startup XAML fix and regression test
+        shell: pwsh
+        run: |
+          $payload = 'kuka-ui/fix-111.patch.gz.b64'
+          if (-not (Test-Path $payload)) { throw "Missing 1.1.1 fix payload: $payload" }
+          $payloadHash = (Get-FileHash $payload -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($payloadHash -ne '2c7036849ba76d453a4976ec9a2adc23ff4b461bc56a89119b066663b6b03665') { throw "1.1.1 payload checksum mismatch: $payloadHash" }
+          $b64 = (Get-Content $payload -Raw -Encoding ASCII).Trim()
+          [IO.File]::WriteAllBytes('kuka-ui-111.patch.gz', [Convert]::FromBase64String($b64))
+          $in = [IO.File]::OpenRead('kuka-ui-111.patch.gz')
+          $out = [IO.File]::Create('kuka-ui-111.patch')
+          try {
+            $gz = [IO.Compression.GzipStream]::new($in, [IO.Compression.CompressionMode]::Decompress)
+            try { $gz.CopyTo($out) } finally { $gz.Dispose() }
+          } finally {
+            $out.Dispose()
+            $in.Dispose()
+          }
+          git apply --check --binary kuka-ui-111.patch
+          if ($LASTEXITCODE -ne 0) { throw "1.1.1 patch check failed: $LASTEXITCODE" }
+          git apply --binary kuka-ui-111.patch
+          if ($LASTEXITCODE -ne 0) { throw "1.1.1 patch apply failed: $LASTEXITCODE" }
+          $theme = Get-Content 'src/KukaManager/Design/Theme.cs' -Raw -Encoding UTF8
+          if ($theme -match '<Setter Property="SelectionBrush" Value="\{StaticResource SelectionBrush\}"/>') { throw 'Invalid DataGrid SelectionBrush setter still present' }
+          $test = Get-Content 'tests/KukaManager.SmokeTests/Program.cs' -Raw -Encoding UTF8
+          if ($test -notmatch 'modern WPF theme parses and loads') { throw 'Theme parse regression test missing' }
           $appPaths = Get-Content 'src/KukaManager/Utils/AppPaths.cs' -Raw -Encoding UTF8
-          if ($appPaths -notmatch '1\.1\.0') { throw 'App version did not update to 1.1.0' }
-          $project = Get-Content $projectPath -Raw -Encoding UTF8
-          if ($project -notmatch '<Version>1\.1\.0</Version>') { throw 'Project version did not update to 1.1.0' }
+          if ($appPaths -notmatch '1\.1\.1') { throw 'App version did not update to 1.1.1' }
 
       - name: Restore main app
         run: dotnet restore .\src\KukaManager\KukaManager.csproj --source https://api.nuget.org/v3/index.json
@@ -108,7 +128,7 @@ jobs:
       - name: Build smoke tests
         run: dotnet build .\tests\KukaManager.SmokeTests\KukaManager.SmokeTests.csproj -c Release --no-restore
 
-      - name: Run migration smoke tests
+      - name: Run smoke tests including real theme parse
         run: dotnet run --project .\tests\KukaManager.SmokeTests\KukaManager.SmokeTests.csproj -c Release --no-build
 
       - name: Restore win-x64 publish assets
@@ -133,16 +153,16 @@ jobs:
           Start-Sleep -Seconds 5
           if ($p.HasExited) { throw "KukaManager exited during startup with code $($p.ExitCode)" }
           Stop-Process -Id $p.Id -Force
-          Write-Host 'KukaManager 1.1.0 stayed alive for 5 seconds.'
+          Write-Host 'KukaManager 1.1.1 stayed alive for 5 seconds.'
 
       - name: Package verified build
         shell: pwsh
         run: |
-          Compress-Archive -Path '.\dist\KukaManager\*' -DestinationPath '.\KukaManager-CSharp-1.1.0-win-x64.zip' -Force
+          Compress-Archive -Path '.\dist\KukaManager\*' -DestinationPath '.\KukaManager-CSharp-1.1.1-win-x64.zip' -Force
 
       - name: Upload verified Windows build
         uses: actions/upload-artifact@v4
         with:
-          name: KukaManager-CSharp-1.1.0-win-x64
-          path: KukaManager-CSharp-1.1.0-win-x64.zip
+          name: KukaManager-CSharp-1.1.1-win-x64
+          path: KukaManager-CSharp-1.1.1-win-x64.zip
           if-no-files-found: error
