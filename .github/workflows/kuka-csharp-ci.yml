@@ -105,16 +105,22 @@ jobs:
             $out.Dispose()
             $in.Dispose()
           }
-          git apply --check --binary kuka-ui-111.patch
+          git apply --check --binary --exclude=src/KukaManager/KukaManager.csproj kuka-ui-111.patch
           if ($LASTEXITCODE -ne 0) { throw "1.1.1 patch check failed: $LASTEXITCODE" }
-          git apply --binary kuka-ui-111.patch
+          git apply --binary --exclude=src/KukaManager/KukaManager.csproj kuka-ui-111.patch
           if ($LASTEXITCODE -ne 0) { throw "1.1.1 patch apply failed: $LASTEXITCODE" }
           $theme = Get-Content 'src/KukaManager/Design/Theme.cs' -Raw -Encoding UTF8
           if ($theme -match '<Setter Property="SelectionBrush" Value="\{StaticResource SelectionBrush\}"/>') { throw 'Invalid DataGrid SelectionBrush setter still present' }
           $test = Get-Content 'tests/KukaManager.SmokeTests/Program.cs' -Raw -Encoding UTF8
           if ($test -notmatch 'modern WPF theme parses and loads') { throw 'Theme parse regression test missing' }
+          $projectPath = 'src/KukaManager/KukaManager.csproj'
+          $project = Get-Content $projectPath -Raw -Encoding UTF8
+          $updatedProject = [Regex]::Replace($project, '<Version>[^<]+</Version>', '<Version>1.1.1</Version>', 1)
+          [IO.File]::WriteAllText($projectPath, $updatedProject, [Text.UTF8Encoding]::new($false))
           $appPaths = Get-Content 'src/KukaManager/Utils/AppPaths.cs' -Raw -Encoding UTF8
           if ($appPaths -notmatch '1\.1\.1') { throw 'App version did not update to 1.1.1' }
+          $project = Get-Content $projectPath -Raw -Encoding UTF8
+          if ($project -notmatch '<Version>1\.1\.1</Version>') { throw 'Project version did not update to 1.1.1' }
 
       - name: Restore main app
         run: dotnet restore .\src\KukaManager\KukaManager.csproj --source https://api.nuget.org/v3/index.json
