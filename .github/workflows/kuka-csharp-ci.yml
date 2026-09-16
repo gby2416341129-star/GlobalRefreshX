@@ -1,0 +1,99 @@
+name: Kuka CSharp Windows Verify
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - kuka-csharp-ci-106
+    paths:
+      - 'kuka-ci/**'
+      - '.github/workflows/kuka-csharp-ci.yml'
+
+jobs:
+  windows-build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout isolated CI branch
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.401'
+
+      - name: Reconstruct source archive
+        shell: pwsh
+        run: |
+          $parts = @()
+          0..4 | ForEach-Object {
+            $path = ('kuka-ci/parts/part-{0:D2}.txt' -f $_)
+            if (-not (Test-Path $path)) { throw "Missing $path" }
+            $parts += (Get-Content $path -Raw -Encoding ASCII).Trim()
+          }
+          $b64 = ($parts -join '')
+          if ($b64.Length -ne 63168) { throw "Unexpected base64 length: $($b64.Length)" }
+          [IO.File]::WriteAllText('source.b64', $b64, [Text.Encoding]::ASCII)
+          $b64Hash = (Get-FileHash source.b64 -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($b64Hash -ne '7e406b7bddabd6aa206cf151e3313af67e2d33baf1bc9cc25509c71f45cb5039') {
+            throw "Base64 checksum mismatch: $b64Hash"
+          }
+          [IO.File]::WriteAllBytes('source.tar.xz', [Convert]::FromBase64String($b64))
+          $tarHash = (Get-FileHash source.tar.xz -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($tarHash -ne '796cf89de00eb700817a0aa16e38b5c31955218ca857fd7b27f84bd1a4fae12d') {
+            throw "Archive checksum mismatch: $tarHash"
+          }
+          tar -xf source.tar.xz
+          if ($LASTEXITCODE -ne 0) { throw "tar extraction failed: $LASTEXITCODE" }
+          if (-not (Test-Path 'src/KukaManager/KukaManager.csproj')) { throw 'Project not extracted' }
+
+      - name: Restore main app
+        run: dotnet restore .\src\KukaManager\KukaManager.csproj --source https://api.nuget.org/v3/index.json
+
+      - name: Build main app
+        run: dotnet build .\src\KukaManager\KukaManager.csproj -c Release --no-restore
+
+      - name: Restore smoke tests
+        run: dotnet restore .\tests\KukaManager.SmokeTests\KukaManager.SmokeTests.csproj --source https://api.nuget.org/v3/index.json
+
+      - name: Build smoke tests
+        run: dotnet build .\tests\KukaManager.SmokeTests\KukaManager.SmokeTests.csproj -c Release --no-restore
+
+      - name: Run migration smoke tests
+        run: dotnet run --project .\tests\KukaManager.SmokeTests\KukaManager.SmokeTests.csproj -c Release --no-build
+
+      - name: Restore win-x64 publish assets
+        run: dotnet restore .\src\KukaManager\KukaManager.csproj -r win-x64 --source https://api.nuget.org/v3/index.json
+
+      - name: Publish self-contained win-x64
+        run: dotnet publish .\src\KukaManager\KukaManager.csproj -c Release -r win-x64 --self-contained true --no-restore -o .\dist\KukaManager
+
+      - name: Verify executable exists
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path '.\dist\KukaManager\KukaManager.exe'
+          $size = (Get-Item $exe).Length
+          if ($size -lt 100000) { throw "Executable unexpectedly small: $size" }
+          Write-Host "Verified executable: $exe ($size bytes)"
+
+      - name: Startup smoke test
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path '.\dist\KukaManager\KukaManager.exe'
+          $p = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 5
+          if ($p.HasExited) { throw "KukaManager exited during startup with code $($p.ExitCode)" }
+          Stop-Process -Id $p.Id -Force
+          Write-Host 'KukaManager stayed alive for 5 seconds.'
+
+      - name: Package verified build
+        shell: pwsh
+        run: |
+          Compress-Archive -Path '.\dist\KukaManager\*' -DestinationPath '.\KukaManager-CSharp-1.0.6-win-x64.zip' -Force
+
+      - name: Upload verified Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: KukaManager-CSharp-1.0.6-win-x64
+          path: KukaManager-CSharp-1.0.6-win-x64.zip
+          if-no-files-found: error
