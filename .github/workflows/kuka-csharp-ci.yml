@@ -1,12 +1,13 @@
-name: Kuka CSharp Windows Verify
+name: Kuka CSharp UI 1.1.0 Windows Verify
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - kuka-csharp-ci-106
+      - kuka-ui-110
     paths:
       - 'kuka-ci/**'
+      - 'kuka-ui/**'
       - '.github/workflows/kuka-csharp-ci.yml'
 
 jobs:
@@ -14,7 +15,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout isolated CI branch
+      - name: Checkout isolated UI branch
         uses: actions/checkout@v4
 
       - name: Setup .NET 10 SDK
@@ -22,7 +23,7 @@ jobs:
         with:
           dotnet-version: '10.0.401'
 
-      - name: Reconstruct and verify source archive
+      - name: Reconstruct verified 1.0.6 source archive
         shell: pwsh
         run: |
           $chunkInfo = @(
@@ -58,6 +59,35 @@ jobs:
           if ($test -notmatch '(?m)^using System\.IO;') {
             [IO.File]::WriteAllText($testPath, "using System.IO;`r`n" + $test, [Text.UTF8Encoding]::new($false))
           }
+
+      - name: Apply and verify Kuka 1.1.0 UI overhaul
+        shell: pwsh
+        run: |
+          $payload = 'kuka-ui/patch.gz.b64'
+          if (-not (Test-Path $payload)) { throw "Missing UI patch payload: $payload" }
+          $payloadHash = (Get-FileHash $payload -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($payloadHash -ne 'a14ad60f0d3ae54af10cca88dcfa7a568e9927a5263c67be912f420d38abf07e') {
+            throw "UI patch payload checksum mismatch: $payloadHash"
+          }
+          $b64 = (Get-Content $payload -Raw -Encoding ASCII).Trim()
+          [IO.File]::WriteAllBytes('kuka-ui-110.patch.gz', [Convert]::FromBase64String($b64))
+          $in = [IO.File]::OpenRead('kuka-ui-110.patch.gz')
+          $out = [IO.File]::Create('kuka-ui-110.patch')
+          try {
+            $gz = [IO.Compression.GzipStream]::new($in, [IO.Compression.CompressionMode]::Decompress)
+            try { $gz.CopyTo($out) } finally { $gz.Dispose() }
+          } finally {
+            $out.Dispose()
+            $in.Dispose()
+          }
+          git apply --check --binary kuka-ui-110.patch
+          if ($LASTEXITCODE -ne 0) { throw "UI patch check failed: $LASTEXITCODE" }
+          git apply --binary kuka-ui-110.patch
+          if ($LASTEXITCODE -ne 0) { throw "UI patch apply failed: $LASTEXITCODE" }
+          $appPaths = Get-Content 'src/KukaManager/Utils/AppPaths.cs' -Raw -Encoding UTF8
+          if ($appPaths -notmatch '1\.1\.0') { throw 'App version did not update to 1.1.0' }
+          $project = Get-Content 'src/KukaManager/KukaManager.csproj' -Raw -Encoding UTF8
+          if ($project -notmatch '<Version>1\.1\.0</Version>') { throw 'Project version did not update to 1.1.0' }
 
       - name: Restore main app
         run: dotnet restore .\src\KukaManager\KukaManager.csproj --source https://api.nuget.org/v3/index.json
@@ -96,16 +126,16 @@ jobs:
           Start-Sleep -Seconds 5
           if ($p.HasExited) { throw "KukaManager exited during startup with code $($p.ExitCode)" }
           Stop-Process -Id $p.Id -Force
-          Write-Host 'KukaManager stayed alive for 5 seconds.'
+          Write-Host 'KukaManager 1.1.0 stayed alive for 5 seconds.'
 
       - name: Package verified build
         shell: pwsh
         run: |
-          Compress-Archive -Path '.\dist\KukaManager\*' -DestinationPath '.\KukaManager-CSharp-1.0.6-win-x64.zip' -Force
+          Compress-Archive -Path '.\dist\KukaManager\*' -DestinationPath '.\KukaManager-CSharp-1.1.0-win-x64.zip' -Force
 
       - name: Upload verified Windows build
         uses: actions/upload-artifact@v4
         with:
-          name: KukaManager-CSharp-1.0.6-win-x64
-          path: KukaManager-CSharp-1.0.6-win-x64.zip
+          name: KukaManager-CSharp-1.1.0-win-x64
+          path: KukaManager-CSharp-1.1.0-win-x64.zip
           if-no-files-found: error
