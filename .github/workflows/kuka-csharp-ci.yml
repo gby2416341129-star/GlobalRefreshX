@@ -53,6 +53,11 @@ jobs:
           tar -xf source.tar.xz
           if ($LASTEXITCODE -ne 0) { throw "tar extraction failed: $LASTEXITCODE" }
           if (-not (Test-Path 'src/KukaManager/KukaManager.csproj')) { throw 'Project not extracted' }
+          $testPath = 'tests/KukaManager.SmokeTests/Program.cs'
+          $test = Get-Content $testPath -Raw -Encoding UTF8
+          if ($test -notmatch '(?m)^using System\.IO;') {
+            [IO.File]::WriteAllText($testPath, "using System.IO;`r`n" + $test, [Text.UTF8Encoding]::new($false))
+          }
 
       - name: Restore main app
         run: dotnet restore .\src\KukaManager\KukaManager.csproj --source https://api.nuget.org/v3/index.json
